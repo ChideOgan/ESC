@@ -454,13 +454,13 @@ HTML_PAGE = r"""<!doctype html>
     }
 
     .swatch.square {
-      border-radius: 0;
+      border-radius: 3px;
     }
 
-    .swatch.triangle {
-      clip-path: polygon(50% 0, 0 100%, 100% 100%);
-      border: 0;
-      border-radius: 0;
+    .swatch-icon {
+      display: block;
+      width: 13px;
+      height: 13px;
     }
 
     .detail-row {
@@ -779,7 +779,6 @@ HTML_PAGE = r"""<!doctype html>
     const sidebar = document.getElementById("sidebar");
     const topbar = document.querySelector(".topbar");
     const legendPanel = document.getElementById("legend");
-    const detailsPanel = document.getElementById("details");
     const resetButton = document.getElementById("reset");
     const refreshButton = document.getElementById("refresh");
     const collapseButton = document.getElementById("collapseSidebar");
@@ -873,12 +872,8 @@ HTML_PAGE = r"""<!doctype html>
       const gap = 36;
       const sidebarRect = sidebar.getBoundingClientRect();
       const topbarRect = topbar.getBoundingClientRect();
-      const rightPanelRects = [legendPanel, detailsPanel]
-        .map((panel) => panel.getBoundingClientRect())
-        .filter((rect) => rect.width > 0 && rect.height > 0);
-      const rightPanelLeft = rightPanelRects.length
-        ? Math.min(...rightPanelRects.map((rect) => rect.left))
-        : width - 28;
+      const legendRect = legendPanel.getBoundingClientRect();
+      const rightPanelLeft = legendRect.width > 0 ? legendRect.left : width - 28;
       const left = sidebarRect.right + gap;
       const top = topbarRect.bottom + 28;
       const rightEdge = Math.max(left + 240, rightPanelLeft - gap);
@@ -1003,10 +998,62 @@ HTML_PAGE = r"""<!doctype html>
       );
     }
 
-    function trianglePath(point, radius) {
-      ctx.moveTo(point.x, point.y - radius);
-      ctx.lineTo(point.x + radius * 0.95, point.y + radius * 0.82);
-      ctx.lineTo(point.x - radius * 0.95, point.y + radius * 0.82);
+    function roundedPolygonPath(points, cornerRadius) {
+      points.forEach((point, index) => {
+        const previous = points[(index - 1 + points.length) % points.length];
+        const next = points[(index + 1) % points.length];
+        const previousVector = {
+          x: previous.x - point.x,
+          y: previous.y - point.y,
+        };
+        const nextVector = {
+          x: next.x - point.x,
+          y: next.y - point.y,
+        };
+        const previousLength = Math.hypot(previousVector.x, previousVector.y);
+        const nextLength = Math.hypot(nextVector.x, nextVector.y);
+        const distance = Math.min(cornerRadius, previousLength / 2, nextLength / 2);
+        const start = {
+          x: point.x + (previousVector.x / previousLength) * distance,
+          y: point.y + (previousVector.y / previousLength) * distance,
+        };
+        const end = {
+          x: point.x + (nextVector.x / nextLength) * distance,
+          y: point.y + (nextVector.y / nextLength) * distance,
+        };
+
+        if (index === 0) {
+          ctx.moveTo(start.x, start.y);
+        } else {
+          ctx.lineTo(start.x, start.y);
+        }
+        ctx.quadraticCurveTo(point.x, point.y, end.x, end.y);
+      });
+      ctx.closePath();
+    }
+
+    function roundedTrianglePath(point, radius, cornerRadius) {
+      roundedPolygonPath(
+        [
+          { x: point.x, y: point.y - radius },
+          { x: point.x + radius * 0.95, y: point.y + radius * 0.82 },
+          { x: point.x - radius * 0.95, y: point.y + radius * 0.82 },
+        ],
+        cornerRadius,
+      );
+    }
+
+    function roundedRectPath(x, y, width, height, radius) {
+      const cornerRadius = Math.min(radius, width / 2, height / 2);
+      ctx.moveTo(x + cornerRadius, y);
+      ctx.lineTo(x + width - cornerRadius, y);
+      ctx.quadraticCurveTo(x + width, y, x + width, y + cornerRadius);
+      ctx.lineTo(x + width, y + height - cornerRadius);
+      ctx.quadraticCurveTo(x + width, y + height, x + width - cornerRadius, y + height);
+      ctx.lineTo(x + cornerRadius, y + height);
+      ctx.quadraticCurveTo(x, y + height, x, y + height - cornerRadius);
+      ctx.lineTo(x, y + cornerRadius);
+      ctx.quadraticCurveTo(x, y, x + cornerRadius, y);
       ctx.closePath();
     }
 
@@ -1019,7 +1066,7 @@ HTML_PAGE = r"""<!doctype html>
 
         ctx.beginPath();
         ctx.fillStyle = resourceColors[deposit.item] || "#6e7781";
-        trianglePath(point, radius);
+        roundedTrianglePath(point, radius, 1.2);
         ctx.fill();
       }
       ctx.globalAlpha = 1;
@@ -1035,7 +1082,7 @@ HTML_PAGE = r"""<!doctype html>
         if (!isVisible(point, radius)) continue;
 
         ctx.beginPath();
-        ctx.rect(point.x - radius, point.y - radius, radius * 2, radius * 2);
+        roundedRectPath(point.x - radius, point.y - radius, radius * 2, radius * 2, 2);
         ctx.fill();
       }
 
@@ -1065,9 +1112,9 @@ HTML_PAGE = r"""<!doctype html>
       ctx.lineWidth = 2;
       ctx.beginPath();
       if (node.type === "deposit") {
-        trianglePath(point, 8);
+        roundedTrianglePath(point, 8, 2.6);
       } else if (node.type === "machine") {
-        ctx.rect(point.x - 7, point.y - 7, 14, 14);
+        roundedRectPath(point.x - 7, point.y - 7, 14, 14, 3);
       } else {
         ctx.arc(point.x, point.y, 6, 0, Math.PI * 2);
       }
@@ -1237,7 +1284,9 @@ HTML_PAGE = r"""<!doctype html>
       resourceLegend.innerHTML = resourceTypes
         .map((resource) => (
           `<div class="legend-row">
-            <span class="swatch triangle" style="background:${resourceColors[resource] || "#6e7781"}"></span>
+            <svg class="swatch-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path fill="${resourceColors[resource] || "#6e7781"}" d="M8 1.4 Q8.7 1.4 9.1 2.1 L14.7 12.3 Q15.2 13.2 14.6 14 Q14.1 14.7 13.1 14.7 H2.9 Q1.9 14.7 1.4 14 Q0.8 13.2 1.3 12.3 L6.9 2.1 Q7.3 1.4 8 1.4 Z"></path>
+            </svg>
             <span>${escapeHtml(resource)}</span>
           </div>`
         ))
