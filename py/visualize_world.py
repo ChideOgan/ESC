@@ -5,7 +5,6 @@ The dashboard is intentionally still a Step 1 tool:
 - it lists saved generated worlds,
 - it can generate another static world from form settings,
 - it renders the selected world on a canvas,
-- it lets display names be renamed.
 
 There is no simulation loop here. No agents move, mine, trade, message, price,
 or act. The browser only manages and inspects generated world snapshots.
@@ -239,26 +238,19 @@ HTML_PAGE = r"""<!doctype html>
       font-size: 11px;
     }
 
-    .rename-button {
+    .world-more-icon {
       display: grid;
       place-items: center;
       width: 30px;
       height: 30px;
-      color: #59636e;
-      background: transparent;
-      border: 0;
-      border-radius: 8px;
-      cursor: pointer;
+      color: #8c959f;
+      pointer-events: none;
     }
 
-    .rename-button:hover {
-      background: #eef6ff;
-    }
-
-    .rename-button svg {
-      width: 15px;
-      height: 15px;
-      stroke: currentColor;
+    .world-more-icon svg {
+      width: 16px;
+      height: 16px;
+      fill: currentColor;
     }
 
     .sidebar-footer {
@@ -274,7 +266,7 @@ HTML_PAGE = r"""<!doctype html>
       letter-spacing: 0.02em;
     }
 
-    .footer-settings {
+    .footer-world {
       display: grid;
       place-items: center;
       width: 36px;
@@ -286,7 +278,7 @@ HTML_PAGE = r"""<!doctype html>
       cursor: default;
     }
 
-    .footer-settings svg {
+    .footer-world svg {
       width: 20px;
       height: 20px;
       stroke: currentColor;
@@ -647,11 +639,9 @@ HTML_PAGE = r"""<!doctype html>
         </svg>
       </button>
       <button id="openCreate" class="icon-button" type="button" aria-label="Create world">
-        <svg viewBox="0 0 24 24" fill="none" stroke-width="2">
-          <path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17v3Z"></path>
-          <path d="m13.5 7.5 3 3"></path>
-          <path d="M4 4h8"></path>
-          <path d="M4 8h5"></path>
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+          <path d="M18.375 2.625a2.12 2.12 0 1 1 3 3L12.36 14.64a2 2 0 0 1-.85.5l-2.87.84a.5.5 0 0 1-.62-.62l.84-2.87a2 2 0 0 1 .5-.85Z"></path>
         </svg>
       </button>
     </div>
@@ -669,10 +659,13 @@ HTML_PAGE = r"""<!doctype html>
     <div id="worldList" class="world-list"></div>
 
     <div class="sidebar-footer">
-      <span class="footer-settings" aria-label="Settings">
-        <svg viewBox="0 0 24 24" fill="none" stroke-width="2">
-          <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"></path>
-          <path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.05.05a2.1 2.1 0 1 1-2.97 2.97l-.05-.05a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.09 1.65V21.4a2.1 2.1 0 1 1-4.2 0v-.07a1.8 1.8 0 0 0-1.18-1.69 1.8 1.8 0 0 0-1.98.36l-.05.05a2.1 2.1 0 1 1-2.97-2.97l.05-.05A1.8 1.8 0 0 0 3.75 15a1.8 1.8 0 0 0-1.65-1.09H2.03a2.1 2.1 0 1 1 0-4.2h.07a1.8 1.8 0 0 0 1.69-1.18 1.8 1.8 0 0 0-.36-1.98l-.05-.05a2.1 2.1 0 1 1 2.97-2.97l.05.05a1.8 1.8 0 0 0 1.98.36h.01A1.8 1.8 0 0 0 9.48 2.3v-.07a2.1 2.1 0 1 1 4.2 0v.07a1.8 1.8 0 0 0 1.09 1.65 1.8 1.8 0 0 0 1.98-.36l.05-.05a2.1 2.1 0 1 1 2.97 2.97l-.05.05a1.8 1.8 0 0 0-.36 1.98v.01a1.8 1.8 0 0 0 1.65 1.09h.07a2.1 2.1 0 1 1 0 4.2h-.07A1.8 1.8 0 0 0 19.4 15Z"></path>
+      <span class="footer-world" aria-label="Worlds">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="9"></circle>
+          <path d="M3.6 9h16.8"></path>
+          <path d="M3.6 15h16.8"></path>
+          <path d="M12 3c2.4 2.6 3.6 5.6 3.6 9s-1.2 6.4-3.6 9"></path>
+          <path d="M12 3c-2.4 2.6-3.6 5.6-3.6 9s1.2 6.4 3.6 9"></path>
         </svg>
       </span>
     </div>
@@ -1218,12 +1211,13 @@ HTML_PAGE = r"""<!doctype html>
               <span class="world-name">${escapeHtml(world.display_name)}</span>
               <span class="world-meta">seed ${escapeHtml(world.seed)} · ${escapeHtml(world.created_at || "")}</span>
             </button>
-            <button class="rename-button" type="button" data-action="rename" data-world-id="${escapeHtml(world.id)}" aria-label="Rename ${escapeHtml(world.display_name)}">
-              <svg viewBox="0 0 24 24" fill="none" stroke-width="2">
-                <path d="M12 20h9"></path>
-                <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
+            <span class="world-more-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <circle cx="6" cy="12" r="1.8"></circle>
+                <circle cx="12" cy="12" r="1.8"></circle>
+                <circle cx="18" cy="12" r="1.8"></circle>
               </svg>
-            </button>
+            </span>
           </div>`;
         })
         .join("");
@@ -1332,24 +1326,6 @@ HTML_PAGE = r"""<!doctype html>
       requestDraw();
     }
 
-    async function renameWorld(worldId) {
-      const world = state.worlds.find((item) => item.id === worldId);
-      if (!world) return;
-
-      const nextName = window.prompt("Rename world", world.display_name);
-      if (!nextName || nextName.trim() === world.display_name) return;
-
-      await apiJson("/api/worlds/rename", {
-        method: "POST",
-        body: JSON.stringify({
-          id: worldId,
-          display_name: nextName.trim(),
-        }),
-      });
-      await loadWorldList({ selectCurrent: false });
-      renderWorldSummary();
-    }
-
     function numberField(formData, name) {
       const value = Number(formData.get(name));
       if (!Number.isFinite(value)) {
@@ -1426,11 +1402,6 @@ HTML_PAGE = r"""<!doctype html>
       const action = button.dataset.action;
       if (action === "select") {
         loadSelectedWorld(worldId).catch((error) => {
-          showLoading(error.message);
-        });
-      }
-      if (action === "rename") {
-        renameWorld(worldId).catch((error) => {
           showLoading(error.message);
         });
       }
@@ -1713,30 +1684,6 @@ def generate_world_from_payload(index_path, worlds_dir, payload):
     return entry
 
 
-def rename_world(index_path, payload):
-    """Rename a world display name in the index."""
-    world_id = str(payload.get("id", "")).strip()
-    display_name = str(payload.get("display_name", "")).strip()
-    if not world_id:
-        raise ValueError("World id is required.")
-    if not display_name:
-        raise ValueError("Display name is required.")
-
-    with INDEX_LOCK:
-        index = load_index(index_path)
-        entry = find_world_entry(index, world_id)
-        existing_names = {
-            world.get("display_name", "")
-            for world in index["worlds"]
-            if world["id"] != world_id
-        }
-        if display_name in existing_names:
-            raise ValueError("Another world already uses that display name.")
-        entry["display_name"] = display_name
-        save_index(index_path, index)
-        return entry
-
-
 def public_index(index_path):
     """Return the index payload sent to the browser."""
     with INDEX_LOCK:
@@ -1823,11 +1770,6 @@ def make_handler(index_path, worlds_dir):
                         worlds_dir,
                         payload,
                     )
-                    self.send_json(200, {"world": entry})
-                    return
-
-                if parsed.path == "/api/worlds/rename":
-                    entry = rename_world(index_path, payload)
                     self.send_json(200, {"world": entry})
                     return
 

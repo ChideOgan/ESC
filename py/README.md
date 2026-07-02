@@ -85,7 +85,6 @@ Controls:
 - use `Reset view` to fit the full world again
 - use `Reload world` after changing the selected world file
 - use the sidebar search to filter worlds by display name or seed
-- use the sidebar edit icon to rename a world display name
 - use the create icon in the sidebar to open the Create World panel
 
 ## Generate A World From The UI
@@ -128,8 +127,7 @@ Worlds created from the UI are saved separately in `worlds/`. The dashboard does
 not require a global `generated_world.json` file anymore.
 
 The dashboard sidebar reads from `worlds_index.json`. Clicking a world loads its
-JSON into the visualization. Renaming a world only changes the display name in
-the index; it does not rewrite the world JSON.
+JSON into the visualization.
 
 ## Resource Colors
 
