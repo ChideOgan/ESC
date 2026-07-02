@@ -29,7 +29,7 @@ DEPOSIT_COUNT = 10_000
 TOTAL_RESOURCE_UNITS = 10_000_000
 
 DEFAULT_SEED = 42
-DEFAULT_OUTPUT_PATH = "generated_world.json"
+DEFAULT_OUTPUT_PATH = "worlds/world_seed_42.json"
 ENTITY_TYPES = ("agents", "deposits", "machines")
 
 RESOURCE_TYPES = [
@@ -460,6 +460,7 @@ def validate_world(world):
 def save_world(world, output_path):
     """Write the generated world to disk as readable JSON."""
     path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(world, indent=2) + "\n", encoding="utf-8")
     return path
 

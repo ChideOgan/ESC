@@ -3,3 +3,6 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+py/generated_world.json
+py/worlds_index.json
+py/worlds/

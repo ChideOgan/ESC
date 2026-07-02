@@ -21,13 +21,11 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from world_generator import (
-    DEFAULT_SEED,
     build_world,
     save_world,
 )
 
 
-DEFAULT_WORLD_PATH = "generated_world.json"
 DEFAULT_INDEX_PATH = "worlds_index.json"
 DEFAULT_WORLDS_DIR = "worlds"
 DEFAULT_HOST = "127.0.0.1"
@@ -650,13 +648,10 @@ HTML_PAGE = r"""<!doctype html>
       </button>
       <button id="openCreate" class="icon-button" type="button" aria-label="Create world">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="2">
-          <circle cx="12" cy="12" r="9"></circle>
-          <path d="M3.6 9h16.8"></path>
-          <path d="M3.6 15h16.8"></path>
-          <path d="M12 3c2.4 2.6 3.6 5.6 3.6 9s-1.2 6.4-3.6 9"></path>
-          <path d="M12 3c-2.4 2.6-3.6 5.6-3.6 9s1.2 6.4 3.6 9"></path>
-          <path d="M19 5v4"></path>
-          <path d="M17 7h4"></path>
+          <path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17v3Z"></path>
+          <path d="m13.5 7.5 3 3"></path>
+          <path d="M4 4h8"></path>
+          <path d="M4 8h5"></path>
         </svg>
       </button>
     </div>
@@ -1205,6 +1200,11 @@ HTML_PAGE = r"""<!doctype html>
         return haystack.includes(query);
       });
 
+      if (!state.worlds.length) {
+        worldList.innerHTML = `<div class="world-empty">No worlds yet. Use the create icon to generate the first one.</div>`;
+        return;
+      }
+
       if (!filteredWorlds.length) {
         worldList.innerHTML = `<div class="world-empty">No worlds match this search.</div>`;
         return;
@@ -1279,18 +1279,37 @@ HTML_PAGE = r"""<!doctype html>
     async function loadWorldList({ selectCurrent = true } = {}) {
       const data = await apiJson("/api/worlds?cacheBust=" + Date.now());
       state.worlds = data.worlds || [];
-      state.selectedWorldId = data.selected_world_id || state.worlds[0]?.id || null;
+      const selectedExists = state.worlds.some((world) => {
+        return world.id === data.selected_world_id;
+      });
+      state.selectedWorldId = selectedExists
+        ? data.selected_world_id
+        : state.worlds[0]?.id || null;
       renderWorldList();
 
       if (selectCurrent && state.selectedWorldId) {
         await loadSelectedWorld(state.selectedWorldId);
       } else {
+        state.world = null;
+        renderLegend([]);
         renderWorldSummary();
+        hideLoading();
+        requestDraw();
+        if (!state.worlds.length) {
+          createPanel.classList.add("open");
+        }
       }
     }
 
     async function loadSelectedWorld(worldId) {
-      if (!worldId) return;
+      if (!worldId) {
+        state.world = null;
+        state.selectedWorldId = null;
+        renderWorldSummary();
+        hideLoading();
+        requestDraw();
+        return;
+      }
 
       showLoading("Loading world...");
       state.hoverNode = null;
@@ -1427,6 +1446,10 @@ HTML_PAGE = r"""<!doctype html>
     });
 
     refreshButton.addEventListener("click", () => {
+      if (!state.selectedWorldId) {
+        createPanel.classList.add("open");
+        return;
+      }
       loadSelectedWorld(state.selectedWorldId).catch((error) => {
         showLoading(error.message);
       });
@@ -1461,7 +1484,6 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Serve the ESC world dashboard and world management API."
     )
-    parser.add_argument("--world", default=DEFAULT_WORLD_PATH)
     parser.add_argument("--index", default=DEFAULT_INDEX_PATH)
     parser.add_argument("--worlds-dir", default=DEFAULT_WORLDS_DIR)
     parser.add_argument("--host", default=DEFAULT_HOST)
@@ -1515,26 +1537,13 @@ def relative_to_index(index_path, file_path):
         return str(path)
 
 
-def default_world_entry(default_world_path, index_path):
-    """Build an index entry for the existing generated_world.json."""
-    world = validate_world_file(default_world_path)
-    seed = world["metadata"].get("seed", DEFAULT_SEED)
-    created_at = datetime.fromtimestamp(
-        default_world_path.stat().st_mtime,
-        tz=timezone.utc,
-    ).replace(microsecond=0)
+def normalize_index(index, index_path=None):
+    """Keep the index shape predictable for the browser.
 
-    return {
-        "id": f"default_seed_{seed}",
-        "display_name": f"Default Seed {seed}",
-        "seed": seed,
-        "file_path": relative_to_index(index_path, default_world_path),
-        "created_at": created_at.isoformat(),
-    }
-
-
-def normalize_index(index):
-    """Keep the index shape predictable for the browser."""
+    When index_path is available, entries whose world files no longer exist are
+    skipped. This lets the dashboard recover cleanly after generated files are
+    removed.
+    """
     if not isinstance(index, dict):
         index = {}
 
@@ -1548,6 +1557,10 @@ def normalize_index(index):
             continue
         if not world.get("id") or not world.get("file_path"):
             continue
+        if index_path is not None:
+            world_path = path_for_index(index_path, world["file_path"])
+            if not world_path.exists():
+                continue
         normalized_worlds.append(world)
 
     selected_world_id = index.get("selected_world_id")
@@ -1560,31 +1573,26 @@ def normalize_index(index):
     }
 
 
-def ensure_index(index_path, default_world_path):
+def ensure_index(index_path):
     """Create or normalize worlds_index.json."""
     with INDEX_LOCK:
         if index_path.exists():
-            index = normalize_index(read_json(index_path))
+            index = normalize_index(read_json(index_path), index_path)
         else:
             index = {"selected_world_id": None, "worlds": []}
-
-        if not index["worlds"] and default_world_path.exists():
-            entry = default_world_entry(default_world_path, index_path)
-            index["worlds"].append(entry)
-            index["selected_world_id"] = entry["id"]
 
         write_json(index_path, index)
         return index
 
 
-def load_index(index_path, default_world_path):
+def load_index(index_path):
     """Load the world index, creating it if needed."""
-    return ensure_index(index_path, default_world_path)
+    return ensure_index(index_path)
 
 
 def save_index(index_path, index):
     """Persist the normalized index."""
-    write_json(index_path, normalize_index(index))
+    write_json(index_path, normalize_index(index, index_path))
 
 
 def find_world_entry(index, world_id):
@@ -1606,10 +1614,10 @@ def selected_or_requested_world_id(index, requested_id):
     raise KeyError("No worlds are available.")
 
 
-def load_world_bytes(index_path, default_world_path, requested_id=None):
+def load_world_bytes(index_path, requested_id=None):
     """Load the selected world JSON bytes."""
     with INDEX_LOCK:
-        index = load_index(index_path, default_world_path)
+        index = load_index(index_path)
         world_id = selected_or_requested_world_id(index, requested_id)
         entry = find_world_entry(index, world_id)
         path = path_for_index(index_path, entry["file_path"])
@@ -1660,7 +1668,7 @@ def float_setting(payload, key):
     return value
 
 
-def generate_world_from_payload(index_path, default_world_path, worlds_dir, payload):
+def generate_world_from_payload(index_path, worlds_dir, payload):
     """Generate a world, save it, and append it to the world index."""
     seed = int_setting(payload, "seed")
     base_world_width = int_setting(payload, "base_world_width")
@@ -1681,7 +1689,7 @@ def generate_world_from_payload(index_path, default_world_path, worlds_dir, payl
     )
 
     with INDEX_LOCK:
-        index = load_index(index_path, default_world_path)
+        index = load_index(index_path)
         world_id = unique_world_id(seed)
         output_path = worlds_dir / f"{world_id}.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1705,7 +1713,7 @@ def generate_world_from_payload(index_path, default_world_path, worlds_dir, payl
     return entry
 
 
-def rename_world(index_path, default_world_path, payload):
+def rename_world(index_path, payload):
     """Rename a world display name in the index."""
     world_id = str(payload.get("id", "")).strip()
     display_name = str(payload.get("display_name", "")).strip()
@@ -1715,7 +1723,7 @@ def rename_world(index_path, default_world_path, payload):
         raise ValueError("Display name is required.")
 
     with INDEX_LOCK:
-        index = load_index(index_path, default_world_path)
+        index = load_index(index_path)
         entry = find_world_entry(index, world_id)
         existing_names = {
             world.get("display_name", "")
@@ -1729,17 +1737,17 @@ def rename_world(index_path, default_world_path, payload):
         return entry
 
 
-def public_index(index_path, default_world_path):
+def public_index(index_path):
     """Return the index payload sent to the browser."""
     with INDEX_LOCK:
-        index = load_index(index_path, default_world_path)
+        index = load_index(index_path)
         return {
             "selected_world_id": index["selected_world_id"],
             "worlds": index["worlds"],
         }
 
 
-def make_handler(index_path, default_world_path, worlds_dir):
+def make_handler(index_path, worlds_dir):
     """Create a request handler bound to the selected dashboard paths."""
 
     class WorldDashboardHandler(BaseHTTPRequestHandler):
@@ -1781,20 +1789,16 @@ def make_handler(index_path, default_world_path, worlds_dir):
                 return
 
             if parsed.path == "/api/worlds":
-                self.send_json(200, public_index(index_path, default_world_path))
+                self.send_json(200, public_index(index_path))
                 return
 
             if parsed.path in {"/api/world", "/world.json"}:
                 query = parse_qs(parsed.query)
                 world_id = query.get("id", [None])[0]
                 try:
-                    world_bytes = load_world_bytes(
-                        index_path,
-                        default_world_path,
-                        world_id,
-                    )
+                    world_bytes = load_world_bytes(index_path, world_id)
                 except Exception as error:
-                    self.send_text(500, error)
+                    self.send_text(404, error)
                     return
 
                 self.send_bytes(200, world_bytes, "application/json; charset=utf-8")
@@ -1816,7 +1820,6 @@ def make_handler(index_path, default_world_path, worlds_dir):
                 if parsed.path == "/api/worlds/generate":
                     entry = generate_world_from_payload(
                         index_path,
-                        default_world_path,
                         worlds_dir,
                         payload,
                     )
@@ -1824,7 +1827,7 @@ def make_handler(index_path, default_world_path, worlds_dir):
                     return
 
                 if parsed.path == "/api/worlds/rename":
-                    entry = rename_world(index_path, default_world_path, payload)
+                    entry = rename_world(index_path, payload)
                     self.send_json(200, {"world": entry})
                     return
 
@@ -1839,9 +1842,9 @@ def make_handler(index_path, default_world_path, worlds_dir):
     return WorldDashboardHandler
 
 
-def start_server(host, port, index_path, default_world_path, worlds_dir):
+def start_server(host, port, index_path, worlds_dir):
     """Start the HTTP server, trying nearby ports if the default is busy."""
-    handler = make_handler(index_path, default_world_path, worlds_dir)
+    handler = make_handler(index_path, worlds_dir)
     last_error = None
 
     for candidate_port in range(port, port + 50):
@@ -1857,15 +1860,13 @@ def start_server(host, port, index_path, default_world_path, worlds_dir):
 def main():
     args = parse_args()
     index_path = Path(args.index)
-    default_world_path = Path(args.world)
     worlds_dir = Path(args.worlds_dir)
 
-    ensure_index(index_path, default_world_path)
+    ensure_index(index_path)
     server, actual_port = start_server(
         args.host,
         args.port,
         index_path,
-        default_world_path,
         worlds_dir,
     )
 

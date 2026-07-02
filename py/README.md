@@ -15,10 +15,9 @@ There is no mining, movement, recipe, trade, price, market, or supply-chain logi
 ## Files
 
 - `world_generator.py` creates and validates world JSON files.
-- `generated_world.json` is the first default generated world state.
 - `visualize_world.py` serves the browser dashboard and world-management API.
-- `worlds_index.json` tracks saved worlds for the dashboard sidebar.
-- `worlds/` is where newly generated dashboard worlds are saved.
+- `worlds_index.json` tracks saved worlds for the dashboard sidebar. It is local runtime data.
+- `worlds/` is where generated world JSON files are saved. It is local runtime data.
 - `README.md` explains how to run the current step.
 
 ## Generate The World
@@ -30,13 +29,13 @@ python3 world_generator.py
 This uses seed `42` by default and writes:
 
 ```text
-generated_world.json
+worlds/world_seed_42.json
 ```
 
 You can reproduce or change the world with:
 
 ```bash
-python3 world_generator.py --seed 123 --output generated_world.json
+python3 world_generator.py --seed 123 --output worlds/world_seed_123.json
 ```
 
 Useful options:
@@ -50,7 +49,7 @@ python3 world_generator.py \
   --agent-count 8200 \
   --deposit-count 10000 \
   --total-resource-units 10000000 \
-  --output generated_world.json
+  --output worlds/world_seed_42.json
 ```
 
 The default radius is derived from:
@@ -74,7 +73,8 @@ http://127.0.0.1:8000
 ```
 
 The dashboard opens with a floating sidebar and loads the selected world
-from `worlds_index.json`.
+from `worlds_index.json`. If there are no saved worlds yet, it opens with an
+empty list and the Create World panel ready to use.
 
 Controls:
 
@@ -86,13 +86,13 @@ Controls:
 - use `Reload world` after changing the selected world file
 - use the sidebar search to filter worlds by display name or seed
 - use the sidebar edit icon to rename a world display name
-- use the world icon in the sidebar to open the Create World panel
+- use the create icon in the sidebar to open the Create World panel
 
 ## Generate A World From The UI
 
 1. Run the dashboard with `python3 visualize_world.py`.
 2. Open `http://127.0.0.1:8000`.
-3. Click the world/create icon at the top of the sidebar.
+3. Click the create icon at the top of the sidebar.
 4. Adjust the generation settings.
 5. Click `Generate World`.
 
@@ -124,9 +124,8 @@ simulation.
 - `file_path`
 - `created_at`
 
-The default generated world is indexed as `generated_world.json`. New worlds
-created from the UI are saved separately in `worlds/` and do not overwrite the
-default file.
+Worlds created from the UI are saved separately in `worlds/`. The dashboard does
+not require a global `generated_world.json` file anymore.
 
 The dashboard sidebar reads from `worlds_index.json`. Clicking a world loads its
 JSON into the visualization. Renaming a world only changes the display name in
