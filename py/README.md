@@ -100,6 +100,10 @@ Deposits use fixed colors by resource type so the same item has the same color a
 
 ## JSON Shape
 
+The generated file is shaped like the live simulation state. Instead of lists,
+entities are stored in id-keyed maps so future runtime code can update one
+object directly by id.
+
 ```json
 {
   "metadata": {
@@ -119,27 +123,53 @@ Deposits use fixed colors by resource type so the same item has the same color a
     "total_resource_units": 10000000,
     "resource_types": [
       "iron_ore",
-
       "copper_ore",
-
       "coal",
-
       "stone",
-
       "crude_oil",
-
       "water",
-
       "wood",
-
       "uranium_ore",
-
       "fish"
     ]
   },
-  "agents": [],
-  "deposits": []
+  "agents": {
+    "agent_00001": {
+      "id": "agent_00001",
+      "type": "agent",
+      "coordinate": [24, 52]
+    }
+  },
+  "deposits": {
+    "deposit_00001": {
+      "id": "deposit_00001",
+      "type": "deposit",
+      "item": "iron_ore",
+      "amount": 123,
+      "coordinate": [24, 52]
+    }
+  },
+  "machines": {},
+  "coordinates": {
+    "24,52": {
+      "agents": ["agent_00001"],
+      "deposits": ["deposit_00001"],
+      "machines": []
+    }
+  }
 }
 ```
 
-The actual generated file includes all agents and deposits.
+The actual generated file includes all agents, deposits, and occupied coordinate
+entries.
+
+## Runtime Structure
+
+- `agents` is a map keyed by agent id.
+- `deposits` is a map keyed by deposit id.
+- `machines` is a map keyed by machine id and is empty for now.
+- `coordinates` is a sparse coordinate index keyed by `"x,y"`.
+- each coordinate entry contains `agents`, `deposits`, and `machines` lists.
+- multiple agents may occupy the same coordinate.
+- deposits may share coordinates with agents, but not with other deposits.
+- empty coordinates are not stored.

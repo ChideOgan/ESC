@@ -2,8 +2,10 @@
 """Generate Step 1 world state for the emergent supply-chain simulator.
 
 This file intentionally models only the physical world layout:
-- agent nodes with unique coordinates,
+- agent nodes with coordinates,
 - material deposit nodes with unique coordinates,
+- an id-keyed live-state structure,
+- a sparse coordinate occupancy index,
 - randomized positive deposit amounts that sum to an exact total,
 - validation,
 - JSON output.
@@ -28,6 +30,7 @@ TOTAL_RESOURCE_UNITS = 10_000_000
 
 DEFAULT_SEED = 42
 DEFAULT_OUTPUT_PATH = "generated_world.json"
+ENTITY_TYPES = ("agents", "deposits", "machines")
 
 RESOURCE_TYPES = [
     "iron_ore",
@@ -126,32 +129,63 @@ def is_inside_circle(x, y, center_x, center_y, radius):
     return (dx * dx) + (dy * dy) <= radius * radius
 
 
-def generate_unique_coordinates(count, metadata, rng):
-    """Return unique integer [x, y] coordinates inside the circular map.
+def coordinate_key(coordinate):
+    """Return the JSON-safe sparse-index key for a coordinate."""
+    return f"{coordinate[0]},{coordinate[1]}"
+
+
+def empty_coordinate_entry():
+    """Return the standard occupancy entry for one occupied coordinate."""
+    return {"agents": [], "deposits": [], "machines": []}
+
+
+def generate_coordinate(metadata, rng):
+    """Return one random integer [x, y] coordinate inside the circular map."""
+    world_width = metadata["world_width"]
+    world_height = metadata["world_height"]
+    center_x, center_y = metadata["world_center"]
+    radius = metadata["world_radius"]
+
+    while True:
+        x = rng.randrange(world_width)
+        y = rng.randrange(world_height)
+        if is_inside_circle(x, y, center_x, center_y, radius):
+            return [x, y]
+
+
+def generate_coordinates(count, metadata, rng):
+    """Return count integer coordinates inside the circular map.
 
     Coordinates use this convention:
     - x is in [0, world_width - 1]
     - y is in [0, world_height - 1]
     - the coordinate must also fall inside the world circle
+    - repeated coordinates are allowed
 
-    Agents and deposits are generated separately because they are allowed to
-    overlap each other. Within each node type, coordinates must be unique.
+    This is used for agents because multiple agents can pass through each other
+    and occupy the same point.
     """
-    world_width = metadata["world_width"]
-    world_height = metadata["world_height"]
-    center_x, center_y = metadata["world_center"]
+    coordinates = [generate_coordinate(metadata, rng) for _ in range(count)]
+
+    # Sorting makes the JSON stable for the same seed, not just statistically
+    # equivalent. That helps when comparing generated worlds across runs.
+    return sorted(coordinates)
+
+
+def generate_unique_coordinates(count, metadata, rng):
+    """Return unique integer [x, y] coordinates inside the circular map.
+
+    Deposits use this because two deposits cannot occupy the same coordinate.
+    """
     radius = metadata["world_radius"]
-    rough_capacity = math.pi * (radius ** 2)
+    rough_capacity = math.pi * (radius**2)
 
     if count > rough_capacity:
         raise ValueError("Not enough map cells to place all unique coordinates.")
 
     coordinates = set()
     while len(coordinates) < count:
-        x = rng.randrange(world_width)
-        y = rng.randrange(world_height)
-        if is_inside_circle(x, y, center_x, center_y, radius):
-            coordinates.add((x, y))
+        coordinates.add(tuple(generate_coordinate(metadata, rng)))
 
     # Sorting makes the JSON stable for the same seed, not just statistically
     # equivalent. That helps when comparing generated worlds across runs.
@@ -175,44 +209,63 @@ def generate_positive_amounts(count, total, rng):
 
     cut_points = sorted(rng.sample(range(1, total), count - 1))
     boundaries = [0, *cut_points, total]
-    return [
-        boundaries[index + 1] - boundaries[index]
-        for index in range(count)
-    ]
+    return [boundaries[index + 1] - boundaries[index] for index in range(count)]
 
 
 def build_agents(agent_count, metadata, rng):
-    """Build agent nodes with unique ids and unique agent coordinates."""
-    coordinates = generate_unique_coordinates(agent_count, metadata, rng)
+    """Build id-keyed agent nodes.
 
-    return [
-        {
-            "id": f"agent_{index:05d}",
+    Agents may share coordinates with agents, deposits, or future machines.
+    """
+    coordinates = generate_coordinates(agent_count, metadata, rng)
+    agents = {}
+
+    for index, coordinate in enumerate(coordinates, start=1):
+        agent_id = f"agent_{index:05d}"
+        agents[agent_id] = {
+            "id": agent_id,
             "type": "agent",
             "coordinate": coordinate,
         }
-        for index, coordinate in enumerate(coordinates, start=1)
-    ]
+
+    return agents
 
 
 def build_deposits(deposit_count, total_resource_units, metadata, rng):
-    """Build material deposit nodes with randomized type, amount, and coordinate."""
+    """Build id-keyed deposit nodes with randomized type, amount, and coordinate."""
     coordinates = generate_unique_coordinates(deposit_count, metadata, rng)
     amounts = generate_positive_amounts(deposit_count, total_resource_units, rng)
 
-    deposits = []
+    deposits = {}
     for index, (coordinate, amount) in enumerate(zip(coordinates, amounts), start=1):
-        deposits.append(
-            {
-                "id": f"deposit_{index:05d}",
-                "type": "deposit",
-                "item": rng.choice(RESOURCE_TYPES),
-                "amount": amount,
-                "coordinate": coordinate,
-            }
-        )
+        deposit_id = f"deposit_{index:05d}"
+        deposits[deposit_id] = {
+            "id": deposit_id,
+            "type": "deposit",
+            "item": rng.choice(RESOURCE_TYPES),
+            "amount": amount,
+            "coordinate": coordinate,
+        }
 
     return deposits
+
+
+def build_coordinate_index(agents, deposits, machines):
+    """Build a sparse coordinate -> occupants index from live entity maps."""
+    coordinates = {}
+
+    for collection_name, entities in (
+        ("agents", agents),
+        ("deposits", deposits),
+        ("machines", machines),
+    ):
+        for entity_id, entity in entities.items():
+            key = coordinate_key(entity["coordinate"])
+            coordinates.setdefault(key, empty_coordinate_entry())[collection_name].append(
+                entity_id
+            )
+
+    return coordinates
 
 
 def build_world(
@@ -247,49 +300,67 @@ def build_world(
         total_resource_units,
     )
 
+    agents = build_agents(agent_count, metadata, rng)
+    deposits = build_deposits(
+        deposit_count,
+        total_resource_units,
+        metadata,
+        rng,
+    )
+    machines = {}
+
     world = {
         "metadata": metadata,
-        "agents": build_agents(agent_count, metadata, rng),
-        "deposits": build_deposits(
-            deposit_count,
-            total_resource_units,
-            metadata,
-            rng,
-        ),
+        "agents": agents,
+        "deposits": deposits,
+        "machines": machines,
+        "coordinates": build_coordinate_index(agents, deposits, machines),
     }
 
     validate_world(world)
     return world
 
 
-def validate_coordinates(nodes, metadata, label):
-    """Validate uniqueness and integer bounds for one node collection."""
-    seen_coordinates = set()
+def validate_coordinate_value(entity, metadata, label):
+    """Validate one entity coordinate."""
     world_width = metadata["world_width"]
     world_height = metadata["world_height"]
     center_x, center_y = metadata["world_center"]
     radius = metadata["world_radius"]
+    coordinate = entity.get("coordinate")
 
-    for node in nodes:
-        coordinate = node.get("coordinate")
-        if (
-            not isinstance(coordinate, list)
-            or len(coordinate) != 2
-            or not all(isinstance(value, int) for value in coordinate)
-        ):
-            raise ValueError(f"{label} {node.get('id')} has invalid coordinate")
+    if (
+        not isinstance(coordinate, list)
+        or len(coordinate) != 2
+        or not all(isinstance(value, int) for value in coordinate)
+    ):
+        raise ValueError(f"{label} {entity.get('id')} has invalid coordinate")
 
-        x, y = coordinate
-        if not (0 <= x < world_width and 0 <= y < world_height):
-            raise ValueError(f"{label} {node.get('id')} is outside world bounds")
-        if not is_inside_circle(x, y, center_x, center_y, radius):
-            raise ValueError(f"{label} {node.get('id')} is outside circular map")
+    x, y = coordinate
+    if not (0 <= x < world_width and 0 <= y < world_height):
+        raise ValueError(f"{label} {entity.get('id')} is outside world bounds")
+    if not is_inside_circle(x, y, center_x, center_y, radius):
+        raise ValueError(f"{label} {entity.get('id')} is outside circular map")
 
-        coordinate_key = (x, y)
-        if coordinate_key in seen_coordinates:
-            raise ValueError(f"Duplicate {label} coordinate found: {coordinate}")
 
-        seen_coordinates.add(coordinate_key)
+def validate_entity_map(entities, metadata, label):
+    """Validate an id-keyed entity map and return coordinate usage."""
+    if not isinstance(entities, dict):
+        raise ValueError(f"{label} collection must be an id-keyed map.")
+
+    coordinate_usage = {}
+    for entity_id, entity in entities.items():
+        if not isinstance(entity, dict):
+            raise ValueError(f"{label} {entity_id} must be an object.")
+        if entity_id != entity.get("id"):
+            raise ValueError(f"{label} key {entity_id} does not match inner id.")
+
+        validate_coordinate_value(entity, metadata, label)
+        coordinate_usage.setdefault(coordinate_key(entity["coordinate"]), []).append(
+            entity_id
+        )
+
+    return coordinate_usage
 
 
 def validate_world(world):
@@ -297,26 +368,29 @@ def validate_world(world):
     metadata = world["metadata"]
     agents = world["agents"]
     deposits = world["deposits"]
+    machines = world["machines"]
+    coordinates = world["coordinates"]
     allowed_resources = set(metadata["resource_types"])
 
     if len(agents) != metadata["agent_count"]:
         raise ValueError("Agent count does not match metadata.")
     if len(deposits) != metadata["deposit_count"]:
         raise ValueError("Deposit count does not match metadata.")
+    if not isinstance(machines, dict):
+        raise ValueError("Machines collection must be an id-keyed map.")
+    if not isinstance(coordinates, dict):
+        raise ValueError("Coordinates must be a sparse coordinate index map.")
 
-    validate_coordinates(
-        agents,
-        metadata,
-        "agent",
-    )
-    validate_coordinates(
-        deposits,
-        metadata,
-        "deposit",
-    )
+    agent_coordinates = validate_entity_map(agents, metadata, "agent")
+    deposit_coordinates = validate_entity_map(deposits, metadata, "deposit")
+    machine_coordinates = validate_entity_map(machines, metadata, "machine")
+
+    for key, deposit_ids in deposit_coordinates.items():
+        if len(deposit_ids) > 1:
+            raise ValueError(f"Multiple deposits share coordinate {key}.")
 
     total_amount = 0
-    for deposit in deposits:
+    for deposit in deposits.values():
         item = deposit.get("item")
         amount = deposit.get("amount")
 
@@ -332,6 +406,53 @@ def validate_world(world):
             f"Deposit amounts sum to {total_amount}, "
             f"expected {metadata['total_resource_units']}."
         )
+
+    expected_coordinate_keys = (
+        set(agent_coordinates) | set(deposit_coordinates) | set(machine_coordinates)
+    )
+    actual_coordinate_keys = set(coordinates)
+    if actual_coordinate_keys != expected_coordinate_keys:
+        missing = sorted(expected_coordinate_keys - actual_coordinate_keys)[:5]
+        extra = sorted(actual_coordinate_keys - expected_coordinate_keys)[:5]
+        raise ValueError(
+            "Coordinate index keys do not match entity coordinates. "
+            f"Missing: {missing}. Extra: {extra}."
+        )
+
+    for key, entry in coordinates.items():
+        if set(entry) != set(ENTITY_TYPES):
+            raise ValueError(f"Coordinate {key} has invalid occupancy keys.")
+
+        for collection_name in ENTITY_TYPES:
+            if not isinstance(entry[collection_name], list):
+                raise ValueError(
+                    f"Coordinate {key} {collection_name} entry must be a list."
+                )
+
+        if not any(entry[collection_name] for collection_name in ENTITY_TYPES):
+            raise ValueError(f"Coordinate {key} is fully empty.")
+
+        for agent_id in entry["agents"]:
+            if agent_id not in agents:
+                raise ValueError(f"Coordinate {key} references unknown agent {agent_id}.")
+            if coordinate_key(agents[agent_id]["coordinate"]) != key:
+                raise ValueError(f"Coordinate {key} mismatches agent {agent_id}.")
+
+        for deposit_id in entry["deposits"]:
+            if deposit_id not in deposits:
+                raise ValueError(
+                    f"Coordinate {key} references unknown deposit {deposit_id}."
+                )
+            if coordinate_key(deposits[deposit_id]["coordinate"]) != key:
+                raise ValueError(f"Coordinate {key} mismatches deposit {deposit_id}.")
+
+        for machine_id in entry["machines"]:
+            if machine_id not in machines:
+                raise ValueError(
+                    f"Coordinate {key} references unknown machine {machine_id}."
+                )
+            if coordinate_key(machines[machine_id]["coordinate"]) != key:
+                raise ValueError(f"Coordinate {key} mismatches machine {machine_id}.")
 
     return True
 
@@ -364,9 +485,11 @@ def main():
     print(f"Area multiplier: {world['metadata']['area_multiplier']}")
     print(f"Agents: {len(world['agents'])}")
     print(f"Deposits: {len(world['deposits'])}")
+    print(f"Machines: {len(world['machines'])}")
+    print(f"Occupied coordinates: {len(world['coordinates'])}")
     print(
         "Total resource units: "
-        f"{sum(deposit['amount'] for deposit in world['deposits'])}"
+        f"{sum(deposit['amount'] for deposit in world['deposits'].values())}"
     )
 
 

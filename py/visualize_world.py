@@ -215,6 +215,10 @@ HTML_PAGE = r"""<!doctype html>
       <span class="swatch" style="background:#000000"></span>
       <span>agent</span>
     </div>
+    <div class="legend-row">
+      <span class="swatch" style="background:#0969da"></span>
+      <span>machine</span>
+    </div>
     <div id="resourceLegend"></div>
   </div>
 
@@ -249,6 +253,7 @@ HTML_PAGE = r"""<!doctype html>
       uranium_ore: "#84cc16",
       fish: "#06b6d4",
     };
+    const machineColor = "#0969da";
 
     const state = {
       world: null,
@@ -315,6 +320,22 @@ HTML_PAGE = r"""<!doctype html>
       };
     }
 
+    function mapValues(collection) {
+      return collection ? Object.values(collection) : [];
+    }
+
+    function worldAgents() {
+      return mapValues(state.world.agents);
+    }
+
+    function worldDeposits() {
+      return mapValues(state.world.deposits);
+    }
+
+    function worldMachines() {
+      return mapValues(state.world.machines);
+    }
+
     function requestDraw() {
       if (!state.needsDraw) {
         state.needsDraw = true;
@@ -334,6 +355,7 @@ HTML_PAGE = r"""<!doctype html>
 
       drawMapBounds();
       drawDeposits();
+      drawMachines();
       drawAgents();
       drawHoverRing();
     }
@@ -375,7 +397,7 @@ HTML_PAGE = r"""<!doctype html>
     function drawDeposits() {
       const radius = 3.2;
       ctx.globalAlpha = 0.86;
-      for (const deposit of state.world.deposits) {
+      for (const deposit of worldDeposits()) {
         const point = worldToScreen(deposit.coordinate);
         if (!isVisible(point, radius)) continue;
 
@@ -387,10 +409,30 @@ HTML_PAGE = r"""<!doctype html>
       ctx.globalAlpha = 1;
     }
 
+    function drawMachines() {
+      const radius = 4.4;
+      ctx.save();
+      ctx.strokeStyle = machineColor;
+      ctx.fillStyle = "rgba(9, 105, 218, 0.18)";
+      ctx.lineWidth = 1.5;
+
+      for (const machine of worldMachines()) {
+        const point = worldToScreen(machine.coordinate);
+        if (!isVisible(point, radius)) continue;
+
+        ctx.beginPath();
+        ctx.rect(point.x - radius, point.y - radius, radius * 2, radius * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+
     function drawAgents() {
       const radius = 1.8;
       ctx.fillStyle = "#000000";
-      for (const agent of state.world.agents) {
+      for (const agent of worldAgents()) {
         const point = worldToScreen(agent.coordinate);
         if (!isVisible(point, radius)) continue;
 
@@ -409,7 +451,7 @@ HTML_PAGE = r"""<!doctype html>
       ctx.strokeStyle = "#0969da";
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(point.x, point.y, node.type === "deposit" ? 7 : 6, 0, Math.PI * 2);
+      ctx.arc(point.x, point.y, node.type === "agent" ? 6 : 7, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
     }
@@ -460,7 +502,7 @@ HTML_PAGE = r"""<!doctype html>
       let bestScore = Infinity;
 
       // Deposits are checked first because they are larger and colored.
-      for (const deposit of state.world.deposits) {
+      for (const deposit of worldDeposits()) {
         const point = worldToScreen(deposit.coordinate);
         const dx = point.x - mouseX;
         const dy = point.y - mouseY;
@@ -475,7 +517,22 @@ HTML_PAGE = r"""<!doctype html>
         }
       }
 
-      for (const agent of state.world.agents) {
+      for (const machine of worldMachines()) {
+        const point = worldToScreen(machine.coordinate);
+        const dx = point.x - mouseX;
+        const dy = point.y - mouseY;
+        const distanceSquared = dx * dx + dy * dy;
+        const radius = 7;
+        if (distanceSquared <= radius * radius) {
+          const score = distanceSquared / (radius * radius);
+          if (score < bestScore) {
+            best = machine;
+            bestScore = score;
+          }
+        }
+      }
+
+      for (const agent of worldAgents()) {
         const point = worldToScreen(agent.coordinate);
         const dx = point.x - mouseX;
         const dy = point.y - mouseY;
@@ -582,6 +639,9 @@ HTML_PAGE = r"""<!doctype html>
 
       state.world = await response.json();
       renderLegend(state.world.metadata.resource_types);
+      const agentCount = worldAgents().length;
+      const depositCount = worldDeposits().length;
+      const machineCount = worldMachines().length;
       const shapeSummary = state.world.metadata.world_shape === "circle"
         ? `circle r ${state.world.metadata.world_radius.toLocaleString()}`
         : `${state.world.metadata.world_width} x ${state.world.metadata.world_height}`;
@@ -589,8 +649,9 @@ HTML_PAGE = r"""<!doctype html>
         `seed ${state.world.metadata.seed}`,
         shapeSummary,
         formatAreaMultiplier(state.world.metadata.area_multiplier || 1),
-        `${state.world.metadata.agent_count.toLocaleString()} agents`,
-        `${state.world.metadata.deposit_count.toLocaleString()} deposits`,
+        `${agentCount.toLocaleString()} agents`,
+        `${depositCount.toLocaleString()} deposits`,
+        `${machineCount.toLocaleString()} machines`,
         `${state.world.metadata.total_resource_units.toLocaleString()} resource units`,
       ].join(" | ");
 
@@ -655,7 +716,7 @@ def load_world_bytes(world_path):
 
     # Parse once at startup so JSON errors fail fast, then serve the bytes.
     data = json.loads(path.read_text(encoding="utf-8"))
-    required_keys = {"metadata", "agents", "deposits"}
+    required_keys = {"metadata", "agents", "deposits", "machines", "coordinates"}
     missing_keys = required_keys - set(data)
     if missing_keys:
         raise ValueError(f"World JSON is missing keys: {sorted(missing_keys)}")
