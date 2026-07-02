@@ -47,12 +47,12 @@ HTML_PAGE = r"""<!doctype html>
     :root {
       --sidebar-width: 306px;
       --sidebar-collapsed-width: 66px;
-      --sidebar-bg: #171717;
-      --sidebar-border: #303235;
-      --sidebar-hover: #252525;
-      --sidebar-active: #303030;
-      --sidebar-text: #f4f4f5;
-      --sidebar-muted: #9ca3af;
+      --sidebar-bg: rgba(255, 255, 255, 0.96);
+      --sidebar-border: #d0d7de;
+      --sidebar-hover: #f6f8fa;
+      --sidebar-active: #eaf2ff;
+      --sidebar-text: #1f2328;
+      --sidebar-muted: #59636e;
       --panel-bg: rgba(255, 255, 255, 0.94);
       --panel-border: #d0d7de;
       --text: #1f2328;
@@ -106,10 +106,10 @@ HTML_PAGE = r"""<!doctype html>
       width: var(--sidebar-width);
       overflow: hidden;
       color: var(--sidebar-text);
-      background: rgba(23, 23, 23, 0.96);
+      background: var(--sidebar-bg);
       border: 1px solid var(--sidebar-border);
       border-radius: 18px;
-      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
+      box-shadow: 0 18px 55px rgba(27, 31, 36, 0.14);
       backdrop-filter: blur(14px);
       transition: width 170ms ease;
     }
@@ -132,7 +132,7 @@ HTML_PAGE = r"""<!doctype html>
       height: 36px;
       min-width: 36px;
       padding: 0;
-      color: #e7e7e7;
+      color: #59636e;
       background: transparent;
       border: 1px solid transparent;
       border-radius: 10px;
@@ -141,7 +141,7 @@ HTML_PAGE = r"""<!doctype html>
 
     .icon-button:hover {
       background: var(--sidebar-hover);
-      border-color: #34373a;
+      border-color: var(--sidebar-border);
     }
 
     .icon-button svg {
@@ -164,7 +164,7 @@ HTML_PAGE = r"""<!doctype html>
       left: 12px;
       width: 16px;
       height: 16px;
-      color: #8f949b;
+      color: #8c959f;
       transform: translateY(-50%);
     }
 
@@ -173,18 +173,18 @@ HTML_PAGE = r"""<!doctype html>
       height: 38px;
       padding: 0 12px 0 36px;
       color: var(--sidebar-text);
-      background: #212121;
-      border: 1px solid #2e2f32;
+      background: #ffffff;
+      border: 1px solid var(--sidebar-border);
       border-radius: 10px;
       outline: none;
     }
 
     #worldSearch:focus {
-      border-color: #5b646e;
+      border-color: var(--accent);
     }
 
     #worldSearch::placeholder {
-      color: #81858c;
+      color: #8c959f;
     }
 
     .world-list {
@@ -246,7 +246,7 @@ HTML_PAGE = r"""<!doctype html>
       place-items: center;
       width: 30px;
       height: 30px;
-      color: #c9ccd1;
+      color: #59636e;
       background: transparent;
       border: 0;
       border-radius: 8px;
@@ -254,7 +254,7 @@ HTML_PAGE = r"""<!doctype html>
     }
 
     .rename-button:hover {
-      background: #383838;
+      background: #eef6ff;
     }
 
     .rename-button svg {
@@ -266,14 +266,32 @@ HTML_PAGE = r"""<!doctype html>
     .sidebar-footer {
       display: flex;
       align-items: center;
-      justify-content: space-between;
+      justify-content: center;
       min-height: 56px;
       padding: 12px 16px;
-      color: #f2f2f2;
-      background: #202426;
-      border-top: 1px solid #2e3134;
+      color: var(--sidebar-muted);
+      background: rgba(246, 248, 250, 0.98);
+      border-top: 1px solid var(--sidebar-border);
       font-weight: 700;
       letter-spacing: 0.02em;
+    }
+
+    .footer-settings {
+      display: grid;
+      place-items: center;
+      width: 36px;
+      height: 36px;
+      color: #59636e;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      cursor: default;
+    }
+
+    .footer-settings svg {
+      width: 20px;
+      height: 20px;
+      stroke: currentColor;
     }
 
     .world-empty {
@@ -386,12 +404,6 @@ HTML_PAGE = r"""<!doctype html>
     .primary-button:disabled {
       cursor: not-allowed;
       opacity: 0.65;
-    }
-
-    .settings-label {
-      color: var(--muted);
-      font-size: 13px;
-      font-weight: 650;
     }
 
     .panel {
@@ -662,7 +674,12 @@ HTML_PAGE = r"""<!doctype html>
     <div id="worldList" class="world-list"></div>
 
     <div class="sidebar-footer">
-      <span>ESC</span>
+      <span class="footer-settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2">
+          <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"></path>
+          <path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.05.05a2.1 2.1 0 1 1-2.97 2.97l-.05-.05a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.09 1.65V21.4a2.1 2.1 0 1 1-4.2 0v-.07a1.8 1.8 0 0 0-1.18-1.69 1.8 1.8 0 0 0-1.98.36l-.05.05a2.1 2.1 0 1 1-2.97-2.97l.05-.05A1.8 1.8 0 0 0 3.75 15a1.8 1.8 0 0 0-1.65-1.09H2.03a2.1 2.1 0 1 1 0-4.2h.07a1.8 1.8 0 0 0 1.69-1.18 1.8 1.8 0 0 0-.36-1.98l-.05-.05a2.1 2.1 0 1 1 2.97-2.97l.05.05a1.8 1.8 0 0 0 1.98.36h.01A1.8 1.8 0 0 0 9.48 2.3v-.07a2.1 2.1 0 1 1 4.2 0v.07a1.8 1.8 0 0 0 1.09 1.65 1.8 1.8 0 0 0 1.98-.36l.05-.05a2.1 2.1 0 1 1 2.97 2.97l-.05.05a1.8 1.8 0 0 0-.36 1.98v.01a1.8 1.8 0 0 0 1.65 1.09h.07a2.1 2.1 0 1 1 0 4.2h-.07A1.8 1.8 0 0 0 19.4 15Z"></path>
+        </svg>
+      </span>
     </div>
   </aside>
 
@@ -727,7 +744,6 @@ HTML_PAGE = r"""<!doctype html>
     <div class="top-actions">
       <button id="reset" class="control-button" type="button">Reset view</button>
       <button id="refresh" class="control-button" type="button">Reload world</button>
-      <span class="settings-label">Settings</span>
     </div>
   </header>
 

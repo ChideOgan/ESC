@@ -73,7 +73,7 @@ Then open the printed URL, usually:
 http://127.0.0.1:8000
 ```
 
-The dashboard opens with a floating dark sidebar and loads the selected world
+The dashboard opens with a floating sidebar and loads the selected world
 from `worlds_index.json`.
 
 Controls:
