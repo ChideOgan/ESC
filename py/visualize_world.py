@@ -147,6 +147,11 @@ HTML_PAGE = r"""<!doctype html>
       stroke: currentColor;
     }
 
+    #openCreate svg {
+      width: 18px;
+      height: 18px;
+    }
+
     .sidebar-search-wrap {
       padding: 0 12px 12px;
     }
@@ -375,7 +380,7 @@ HTML_PAGE = r"""<!doctype html>
     }
 
     .control-button {
-      color: var(--text);
+      color: var(--muted);
       background: #ffffff;
       border: 1px solid var(--panel-border);
     }
@@ -449,7 +454,13 @@ HTML_PAGE = r"""<!doctype html>
     }
 
     .swatch.square {
-      border-radius: 3px;
+      border-radius: 0;
+    }
+
+    .swatch.triangle {
+      clip-path: polygon(50% 0, 0 100%, 100% 100%);
+      border: 0;
+      border-radius: 0;
     }
 
     .detail-row {
@@ -738,11 +749,11 @@ HTML_PAGE = r"""<!doctype html>
   <div id="legend" class="panel">
     <h2>Legend</h2>
     <div class="legend-row">
-      <span class="swatch" style="background:#000000"></span>
+      <span class="swatch" style="background:#111827"></span>
       <span>agent</span>
     </div>
     <div class="legend-row">
-      <span class="swatch square" style="background:#0969da"></span>
+      <span class="swatch square" style="background:#ef4444"></span>
       <span>machine</span>
     </div>
     <div id="resourceLegend"></div>
@@ -765,6 +776,7 @@ HTML_PAGE = r"""<!doctype html>
     const tooltip = document.getElementById("tooltip");
     const detailsBody = document.getElementById("detailsBody");
     const resourceLegend = document.getElementById("resourceLegend");
+    const sidebar = document.getElementById("sidebar");
     const resetButton = document.getElementById("reset");
     const refreshButton = document.getElementById("refresh");
     const collapseButton = document.getElementById("collapseSidebar");
@@ -778,17 +790,18 @@ HTML_PAGE = r"""<!doctype html>
     const worldSearch = document.getElementById("worldSearch");
 
     const resourceColors = {
-      iron_ore: "#b45309",
-      copper_ore: "#ea580c",
-      coal: "#24292f",
-      stone: "#8c959f",
-      crude_oil: "#581c87",
+      iron_ore: "#9a5a2e",
+      copper_ore: "#f97316",
+      coal: "#4b5563",
+      stone: "#a8a29e",
+      crude_oil: "#7c3aed",
       water: "#2563eb",
       wood: "#15803d",
       uranium_ore: "#84cc16",
       fish: "#06b6d4",
     };
-    const machineColor = "#0969da";
+    const agentColor = "#111827";
+    const machineColor = "#ef4444";
 
     const state = {
       world: null,
@@ -840,19 +853,36 @@ HTML_PAGE = r"""<!doctype html>
       requestDraw();
     }
 
-    function fitWorldToScreen() {
-      const metadata = state.world.metadata;
+    function fitViewport() {
       const width = canvas.clientWidth;
       const height = canvas.clientHeight;
-      const margin = 110;
-      const scaleX = (width - margin * 2) / metadata.world_width;
-      const scaleY = (height - margin * 2) / metadata.world_height;
+      const sidebarRect = sidebar.getBoundingClientRect();
+      const left = window.innerWidth > 900 ? sidebarRect.right + 28 : 28;
+      const top = window.innerWidth > 900 ? 92 : 28;
+      const right = 28;
+      const bottom = window.innerWidth > 900 ? 28 : 92;
+
+      return {
+        left,
+        top,
+        width: Math.max(240, width - left - right),
+        height: Math.max(240, height - top - bottom),
+      };
+    }
+
+    function fitWorldToScreen() {
+      const metadata = state.world.metadata;
+      const viewport = fitViewport();
+      const scaleX = viewport.width / metadata.world_width;
+      const scaleY = viewport.height / metadata.world_height;
 
       state.scale = Math.max(0.0001, Math.min(scaleX, scaleY));
       state.minScale = state.scale * 0.4;
       state.maxScale = state.scale * 800;
-      state.offsetX = (width - metadata.world_width * state.scale) / 2;
-      state.offsetY = (height - metadata.world_height * state.scale) / 2;
+      state.offsetX =
+        viewport.left + (viewport.width - metadata.world_width * state.scale) / 2;
+      state.offsetY =
+        viewport.top + (viewport.height - metadata.world_height * state.scale) / 2;
     }
 
     function formatAreaMultiplier(value) {
@@ -951,8 +981,15 @@ HTML_PAGE = r"""<!doctype html>
       );
     }
 
+    function trianglePath(point, radius) {
+      ctx.moveTo(point.x, point.y - radius);
+      ctx.lineTo(point.x + radius * 0.95, point.y + radius * 0.82);
+      ctx.lineTo(point.x - radius * 0.95, point.y + radius * 0.82);
+      ctx.closePath();
+    }
+
     function drawDeposits() {
-      const radius = 3.2;
+      const radius = 3.8;
       ctx.globalAlpha = 0.86;
       for (const deposit of worldDeposits()) {
         const point = worldToScreen(deposit.coordinate);
@@ -960,7 +997,7 @@ HTML_PAGE = r"""<!doctype html>
 
         ctx.beginPath();
         ctx.fillStyle = resourceColors[deposit.item] || "#6e7781";
-        ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+        trianglePath(point, radius);
         ctx.fill();
       }
       ctx.globalAlpha = 1;
@@ -969,9 +1006,7 @@ HTML_PAGE = r"""<!doctype html>
     function drawMachines() {
       const radius = 4.4;
       ctx.save();
-      ctx.strokeStyle = machineColor;
-      ctx.fillStyle = "rgba(9, 105, 218, 0.18)";
-      ctx.lineWidth = 1.5;
+      ctx.fillStyle = machineColor;
 
       for (const machine of worldMachines()) {
         const point = worldToScreen(machine.coordinate);
@@ -980,7 +1015,6 @@ HTML_PAGE = r"""<!doctype html>
         ctx.beginPath();
         ctx.rect(point.x - radius, point.y - radius, radius * 2, radius * 2);
         ctx.fill();
-        ctx.stroke();
       }
 
       ctx.restore();
@@ -988,7 +1022,7 @@ HTML_PAGE = r"""<!doctype html>
 
     function drawAgents() {
       const radius = 1.8;
-      ctx.fillStyle = "#000000";
+      ctx.fillStyle = agentColor;
       for (const agent of worldAgents()) {
         const point = worldToScreen(agent.coordinate);
         if (!isVisible(point, radius)) continue;
@@ -1008,7 +1042,13 @@ HTML_PAGE = r"""<!doctype html>
       ctx.strokeStyle = "#0969da";
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(point.x, point.y, node.type === "agent" ? 6 : 7, 0, Math.PI * 2);
+      if (node.type === "deposit") {
+        trianglePath(point, 8);
+      } else if (node.type === "machine") {
+        ctx.rect(point.x - 7, point.y - 7, 14, 14);
+      } else {
+        ctx.arc(point.x, point.y, 6, 0, Math.PI * 2);
+      }
       ctx.stroke();
       ctx.restore();
     }
@@ -1175,7 +1215,7 @@ HTML_PAGE = r"""<!doctype html>
       resourceLegend.innerHTML = resourceTypes
         .map((resource) => (
           `<div class="legend-row">
-            <span class="swatch" style="background:${resourceColors[resource] || "#6e7781"}"></span>
+            <span class="swatch triangle" style="background:${resourceColors[resource] || "#6e7781"}"></span>
             <span>${escapeHtml(resource)}</span>
           </div>`
         ))
