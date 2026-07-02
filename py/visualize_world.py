@@ -777,6 +777,9 @@ HTML_PAGE = r"""<!doctype html>
     const detailsBody = document.getElementById("detailsBody");
     const resourceLegend = document.getElementById("resourceLegend");
     const sidebar = document.getElementById("sidebar");
+    const topbar = document.querySelector(".topbar");
+    const legendPanel = document.getElementById("legend");
+    const detailsPanel = document.getElementById("details");
     const resetButton = document.getElementById("reset");
     const refreshButton = document.getElementById("refresh");
     const collapseButton = document.getElementById("collapseSidebar");
@@ -856,17 +859,36 @@ HTML_PAGE = r"""<!doctype html>
     function fitViewport() {
       const width = canvas.clientWidth;
       const height = canvas.clientHeight;
+      const isDesktop = window.innerWidth > 900;
+
+      if (!isDesktop) {
+        return {
+          left: 28,
+          top: 28,
+          width: Math.max(240, width - 56),
+          height: Math.max(240, height - 120),
+        };
+      }
+
+      const gap = 36;
       const sidebarRect = sidebar.getBoundingClientRect();
-      const left = window.innerWidth > 900 ? sidebarRect.right + 28 : 28;
-      const top = window.innerWidth > 900 ? 92 : 28;
-      const right = 28;
-      const bottom = window.innerWidth > 900 ? 28 : 92;
+      const topbarRect = topbar.getBoundingClientRect();
+      const rightPanelRects = [legendPanel, detailsPanel]
+        .map((panel) => panel.getBoundingClientRect())
+        .filter((rect) => rect.width > 0 && rect.height > 0);
+      const rightPanelLeft = rightPanelRects.length
+        ? Math.min(...rightPanelRects.map((rect) => rect.left))
+        : width - 28;
+      const left = sidebarRect.right + gap;
+      const top = topbarRect.bottom + 28;
+      const rightEdge = Math.max(left + 240, rightPanelLeft - gap);
+      const bottomEdge = height - 28;
 
       return {
         left,
         top,
-        width: Math.max(240, width - left - right),
-        height: Math.max(240, height - top - bottom),
+        width: Math.max(240, rightEdge - left),
+        height: Math.max(240, bottomEdge - top),
       };
     }
 
