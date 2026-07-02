@@ -117,7 +117,25 @@ Deposits use fixed colors by resource type so the same item has the same color a
     "agent_count": 8200,
     "deposit_count": 10000,
     "total_resource_units": 10000000,
-    "resource_types": ["iron_ore", "copper_ore"]
+    "resource_types": [
+      "iron_ore",
+
+      "copper_ore",
+
+      "coal",
+
+      "stone",
+
+      "crude_oil",
+
+      "water",
+
+      "wood",
+
+      "uranium_ore",
+
+      "fish"
+    ]
   },
   "agents": [],
   "deposits": []
