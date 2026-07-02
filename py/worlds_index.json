@@ -1,0 +1,12 @@
+{
+  "selected_world_id": "default_seed_42",
+  "worlds": [
+    {
+      "id": "default_seed_42",
+      "display_name": "Default Seed 42",
+      "seed": 42,
+      "file_path": "generated_world.json",
+      "created_at": "2026-07-02T19:11:00+00:00"
+    }
+  ]
+}

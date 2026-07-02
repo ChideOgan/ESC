@@ -1,22 +1,40 @@
 #!/usr/bin/env python3
-"""Serve an interactive browser visualization for generated_world.json.
+"""Serve the ESC world dashboard.
 
-The visualizer is deliberately separate from the generator:
-- world_generator.py creates and validates data,
-- visualize_world.py reads that JSON and serves a lightweight canvas UI.
+The dashboard is intentionally still a Step 1 tool:
+- it lists saved generated worlds,
+- it can generate another static world from form settings,
+- it renders the selected world on a canvas,
+- it lets display names be renamed.
 
-There is no simulation loop here. The browser only inspects the generated state.
+There is no simulation loop here. No agents move, mine, trade, message, price,
+or act. The browser only manages and inspects generated world snapshots.
 """
 
 import argparse
 import json
+import threading
+import uuid
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+from world_generator import (
+    DEFAULT_SEED,
+    build_world,
+    save_world,
+)
 
 
 DEFAULT_WORLD_PATH = "generated_world.json"
+DEFAULT_INDEX_PATH = "worlds_index.json"
+DEFAULT_WORLDS_DIR = "worlds"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
+
+REQUIRED_WORLD_KEYS = {"metadata", "agents", "deposits", "machines", "coordinates"}
+INDEX_LOCK = threading.RLock()
 
 
 HTML_PAGE = r"""<!doctype html>
@@ -24,14 +42,28 @@ HTML_PAGE = r"""<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Emergent Supply Chain World Viewer</title>
+  <title>ESC World Dashboard</title>
   <style>
     :root {
+      --sidebar-width: 306px;
+      --sidebar-collapsed-width: 66px;
+      --sidebar-bg: #171717;
+      --sidebar-border: #303235;
+      --sidebar-hover: #252525;
+      --sidebar-active: #303030;
+      --sidebar-text: #f4f4f5;
+      --sidebar-muted: #9ca3af;
       --panel-bg: rgba(255, 255, 255, 0.94);
       --panel-border: #d0d7de;
       --text: #1f2328;
       --muted: #59636e;
       --accent: #0969da;
+      --danger: #b42318;
+      --canvas-bg: #f6f8fa;
+    }
+
+    * {
+      box-sizing: border-box;
     }
 
     html,
@@ -42,10 +74,17 @@ HTML_PAGE = r"""<!doctype html>
       overflow: hidden;
       color: var(--text);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #f6f8fa;
+      background: var(--canvas-bg);
+    }
+
+    button,
+    input {
+      font: inherit;
     }
 
     canvas {
+      position: fixed;
+      inset: 0;
       display: block;
       width: 100vw;
       height: 100vh;
@@ -56,72 +95,332 @@ HTML_PAGE = r"""<!doctype html>
       cursor: grabbing;
     }
 
-    .panel {
+    .sidebar {
       position: fixed;
-      z-index: 3;
-      background: var(--panel-bg);
-      border: 1px solid var(--panel-border);
-      box-shadow: 0 8px 28px rgba(27, 31, 36, 0.12);
-      backdrop-filter: blur(8px);
+      top: 14px;
+      bottom: 14px;
+      left: 14px;
+      z-index: 8;
+      display: grid;
+      grid-template-rows: auto auto 1fr auto;
+      width: var(--sidebar-width);
+      overflow: hidden;
+      color: var(--sidebar-text);
+      background: rgba(23, 23, 23, 0.96);
+      border: 1px solid var(--sidebar-border);
+      border-radius: 18px;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
+      backdrop-filter: blur(14px);
+      transition: width 170ms ease;
     }
 
-    #topbar {
-      top: 16px;
-      left: 16px;
-      right: 16px;
-      min-height: 44px;
+    body.sidebar-collapsed .sidebar {
+      width: var(--sidebar-collapsed-width);
+    }
+
+    .sidebar-top {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      padding: 10px 12px;
-      border-radius: 8px;
+      gap: 8px;
+      padding: 12px;
     }
 
-    #title {
-      font-size: 14px;
-      font-weight: 700;
-      white-space: nowrap;
+    .icon-button {
+      display: inline-grid;
+      place-items: center;
+      width: 36px;
+      height: 36px;
+      min-width: 36px;
+      padding: 0;
+      color: #e7e7e7;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      cursor: pointer;
     }
 
-    #summary {
-      color: var(--muted);
-      font-size: 12px;
+    .icon-button:hover {
+      background: var(--sidebar-hover);
+      border-color: #34373a;
+    }
+
+    .icon-button svg {
+      width: 20px;
+      height: 20px;
+      stroke: currentColor;
+    }
+
+    .sidebar-search-wrap {
+      padding: 0 12px 12px;
+    }
+
+    .sidebar-search {
+      position: relative;
+    }
+
+    .sidebar-search svg {
+      position: absolute;
+      top: 50%;
+      left: 12px;
+      width: 16px;
+      height: 16px;
+      color: #8f949b;
+      transform: translateY(-50%);
+    }
+
+    #worldSearch {
+      width: 100%;
+      height: 38px;
+      padding: 0 12px 0 36px;
+      color: var(--sidebar-text);
+      background: #212121;
+      border: 1px solid #2e2f32;
+      border-radius: 10px;
+      outline: none;
+    }
+
+    #worldSearch:focus {
+      border-color: #5b646e;
+    }
+
+    #worldSearch::placeholder {
+      color: #81858c;
+    }
+
+    .world-list {
+      min-height: 0;
+      overflow-y: auto;
+      padding: 0 8px 8px;
+    }
+
+    .world-row {
+      display: grid;
+      grid-template-columns: 1fr 30px;
+      align-items: center;
+      gap: 4px;
+      min-height: 48px;
+      margin: 2px 0;
+      padding: 4px;
+      border-radius: 12px;
+    }
+
+    .world-row:hover {
+      background: var(--sidebar-hover);
+    }
+
+    .world-row.active {
+      background: var(--sidebar-active);
+    }
+
+    .world-main {
+      min-width: 0;
+      padding: 6px 6px 6px 10px;
+      color: inherit;
+      text-align: left;
+      background: transparent;
+      border: 0;
+      cursor: pointer;
+    }
+
+    .world-name,
+    .world-meta {
+      display: block;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
-    #controls {
+    .world-name {
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .world-meta {
+      margin-top: 3px;
+      color: var(--sidebar-muted);
+      font-size: 11px;
+    }
+
+    .rename-button {
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      color: #c9ccd1;
+      background: transparent;
+      border: 0;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+
+    .rename-button:hover {
+      background: #383838;
+    }
+
+    .rename-button svg {
+      width: 15px;
+      height: 15px;
+      stroke: currentColor;
+    }
+
+    .sidebar-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 56px;
+      padding: 12px 16px;
+      color: #f2f2f2;
+      background: #202426;
+      border-top: 1px solid #2e3134;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .world-empty {
+      padding: 16px 12px;
+      color: var(--sidebar-muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    body.sidebar-collapsed .sidebar {
+      grid-template-rows: auto 1fr;
+    }
+
+    body.sidebar-collapsed .sidebar-search-wrap,
+    body.sidebar-collapsed .world-list,
+    body.sidebar-collapsed .sidebar-footer {
+      display: none;
+    }
+
+    body.sidebar-collapsed .sidebar-top {
+      flex-direction: column;
+      padding: 12px;
+    }
+
+    body.sidebar-collapsed #collapseSidebar .collapse-expanded {
+      display: none;
+    }
+
+    body:not(.sidebar-collapsed) #collapseSidebar .collapse-collapsed {
+      display: none;
+    }
+
+    .topbar {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      left: calc(var(--sidebar-width) + 34px);
+      z-index: 5;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      min-height: 52px;
+      padding: 10px 14px;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      box-shadow: 0 12px 30px rgba(27, 31, 36, 0.12);
+      backdrop-filter: blur(10px);
+      transition: left 170ms ease;
+    }
+
+    body.sidebar-collapsed .topbar {
+      left: calc(var(--sidebar-collapsed-width) + 34px);
+    }
+
+    .title-stack {
+      min-width: 0;
+    }
+
+    #title {
+      overflow: hidden;
+      font-size: 14px;
+      font-weight: 750;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #summary {
+      margin-top: 2px;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 12px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .top-actions {
       display: flex;
       align-items: center;
       gap: 8px;
       white-space: nowrap;
     }
 
-    button {
-      border: 1px solid var(--panel-border);
-      border-radius: 6px;
-      background: #ffffff;
-      color: var(--text);
-      padding: 6px 9px;
-      font: inherit;
-      font-size: 12px;
+    .control-button,
+    .primary-button {
+      height: 34px;
+      padding: 0 12px;
+      border-radius: 8px;
       cursor: pointer;
     }
 
-    button:hover {
+    .control-button {
+      color: var(--text);
+      background: #ffffff;
+      border: 1px solid var(--panel-border);
+    }
+
+    .control-button:hover {
       border-color: var(--accent);
     }
 
+    .primary-button {
+      color: #ffffff;
+      background: var(--accent);
+      border: 1px solid var(--accent);
+      font-weight: 700;
+    }
+
+    .primary-button:disabled {
+      cursor: not-allowed;
+      opacity: 0.65;
+    }
+
+    .settings-label {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .panel {
+      position: fixed;
+      z-index: 4;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      box-shadow: 0 12px 30px rgba(27, 31, 36, 0.12);
+      backdrop-filter: blur(10px);
+    }
+
     #legend {
-      left: 16px;
-      bottom: 16px;
-      width: 220px;
-      max-height: calc(100vh - 120px);
+      right: 16px;
+      bottom: 196px;
+      width: 228px;
+      max-height: calc(100vh - 300px);
       overflow: auto;
       padding: 12px;
-      border-radius: 8px;
+      border-radius: 12px;
+    }
+
+    #details {
+      right: 16px;
+      bottom: 16px;
+      width: 304px;
+      min-height: 152px;
+      padding: 12px;
+      border-radius: 12px;
+      font-size: 12px;
     }
 
     #legend h2,
@@ -143,18 +442,12 @@ HTML_PAGE = r"""<!doctype html>
     .swatch {
       width: 12px;
       height: 12px;
-      border-radius: 50%;
       border: 1px solid rgba(0, 0, 0, 0.2);
+      border-radius: 50%;
     }
 
-    #details {
-      right: 16px;
-      bottom: 16px;
-      width: 290px;
-      min-height: 116px;
-      padding: 12px;
-      border-radius: 8px;
-      font-size: 12px;
+    .swatch.square {
+      border-radius: 3px;
     }
 
     .detail-row {
@@ -170,44 +463,273 @@ HTML_PAGE = r"""<!doctype html>
 
     #tooltip {
       position: fixed;
-      z-index: 4;
+      z-index: 10;
       display: none;
-      pointer-events: none;
       max-width: 280px;
       padding: 8px 9px;
-      border-radius: 7px;
-      border: 1px solid var(--panel-border);
+      pointer-events: none;
       background: rgba(255, 255, 255, 0.97);
+      border: 1px solid var(--panel-border);
+      border-radius: 8px;
       box-shadow: 0 8px 22px rgba(27, 31, 36, 0.14);
       font-size: 12px;
       line-height: 1.35;
     }
 
-    #loading {
+    .loading {
       position: fixed;
       inset: 0;
-      z-index: 5;
-      display: grid;
+      z-index: 3;
+      display: none;
       place-items: center;
-      background: #f6f8fa;
       color: var(--muted);
+      background: rgba(246, 248, 250, 0.62);
       font-size: 14px;
+    }
+
+    .loading.visible {
+      display: grid;
+    }
+
+    .create-panel {
+      position: fixed;
+      top: 84px;
+      left: calc(var(--sidebar-width) + 34px);
+      z-index: 7;
+      display: none;
+      width: min(460px, calc(100vw - var(--sidebar-width) - 64px));
+      max-height: calc(100vh - 112px);
+      overflow: auto;
+      padding: 16px;
+      background: rgba(255, 255, 255, 0.98);
+      border: 1px solid var(--panel-border);
+      border-radius: 14px;
+      box-shadow: 0 22px 64px rgba(27, 31, 36, 0.2);
+      transition: left 170ms ease;
+    }
+
+    body.sidebar-collapsed .create-panel {
+      left: calc(var(--sidebar-collapsed-width) + 34px);
+      width: min(460px, calc(100vw - var(--sidebar-collapsed-width) - 64px));
+    }
+
+    .create-panel.open {
+      display: block;
+    }
+
+    .create-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .create-header h2 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+
+    .field.full {
+      grid-column: 1 / -1;
+    }
+
+    .field label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .field input {
+      width: 100%;
+      height: 36px;
+      padding: 0 10px;
+      color: var(--text);
+      background: #ffffff;
+      border: 1px solid var(--panel-border);
+      border-radius: 8px;
+      outline: none;
+    }
+
+    .field input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.12);
+    }
+
+    .form-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    #formStatus {
+      min-width: 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    #formStatus.error {
+      color: var(--danger);
+    }
+
+    @media (max-width: 900px) {
+      :root {
+        --sidebar-width: 276px;
+      }
+
+      .topbar {
+        left: 16px;
+        right: 16px;
+        top: auto;
+        bottom: 16px;
+      }
+
+      body.sidebar-collapsed .topbar {
+        left: 16px;
+      }
+
+      #legend,
+      #details {
+        display: none;
+      }
+
+      .create-panel,
+      body.sidebar-collapsed .create-panel {
+        left: 16px;
+        right: 16px;
+        width: auto;
+      }
     }
   </style>
 </head>
 <body>
   <canvas id="world"></canvas>
 
-  <div id="topbar" class="panel">
-    <div>
-      <div id="title">Emergent Supply Chain World</div>
-      <div id="summary">Loading generated_world.json...</div>
+  <aside id="sidebar" class="sidebar" aria-label="World sidebar">
+    <div class="sidebar-top">
+      <button id="collapseSidebar" class="icon-button" type="button" aria-label="Collapse sidebar">
+        <svg class="collapse-expanded" viewBox="0 0 24 24" fill="none" stroke-width="2">
+          <rect x="3" y="4" width="18" height="16" rx="3"></rect>
+          <path d="M9 4v16"></path>
+          <path d="M6 9h1"></path>
+          <path d="M6 12h1"></path>
+          <path d="M6 15h1"></path>
+        </svg>
+        <svg class="collapse-collapsed" viewBox="0 0 24 24" fill="none" stroke-width="2">
+          <rect x="3" y="4" width="18" height="16" rx="3"></rect>
+          <path d="M15 4v16"></path>
+          <path d="M8 9h1"></path>
+          <path d="M8 12h1"></path>
+          <path d="M8 15h1"></path>
+        </svg>
+      </button>
+      <button id="openCreate" class="icon-button" type="button" aria-label="Create world">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2">
+          <circle cx="12" cy="12" r="9"></circle>
+          <path d="M3.6 9h16.8"></path>
+          <path d="M3.6 15h16.8"></path>
+          <path d="M12 3c2.4 2.6 3.6 5.6 3.6 9s-1.2 6.4-3.6 9"></path>
+          <path d="M12 3c-2.4 2.6-3.6 5.6-3.6 9s1.2 6.4 3.6 9"></path>
+          <path d="M19 5v4"></path>
+          <path d="M17 7h4"></path>
+        </svg>
+      </button>
     </div>
-    <div id="controls">
-      <button id="reset">Reset view</button>
-      <button id="refresh">Reload JSON</button>
+
+    <div class="sidebar-search-wrap">
+      <div class="sidebar-search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="7"></circle>
+          <path d="m20 20-3.5-3.5"></path>
+        </svg>
+        <input id="worldSearch" type="search" placeholder="Search worlds or seeds" autocomplete="off" />
+      </div>
     </div>
-  </div>
+
+    <div id="worldList" class="world-list"></div>
+
+    <div class="sidebar-footer">
+      <span>ESC</span>
+    </div>
+  </aside>
+
+  <section id="createPanel" class="create-panel" aria-label="Create World">
+    <div class="create-header">
+      <h2>Create World</h2>
+      <button id="closeCreate" class="icon-button" type="button" aria-label="Close create world panel" style="color:#59636e">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2">
+          <path d="M18 6 6 18"></path>
+          <path d="m6 6 12 12"></path>
+        </svg>
+      </button>
+    </div>
+
+    <form id="createWorldForm">
+      <div class="form-grid">
+        <div class="field full">
+          <label for="displayNameInput">output / world name</label>
+          <input id="displayNameInput" name="display_name" value="Seed 42" />
+        </div>
+        <div class="field">
+          <label for="seedInput">seed</label>
+          <input id="seedInput" name="seed" type="number" step="1" value="42" />
+        </div>
+        <div class="field">
+          <label for="areaMultiplierInput">area_multiplier</label>
+          <input id="areaMultiplierInput" name="area_multiplier" type="number" step="0.1" value="3" />
+        </div>
+        <div class="field">
+          <label for="baseWidthInput">base_world_width</label>
+          <input id="baseWidthInput" name="base_world_width" type="number" step="1" value="100000" />
+        </div>
+        <div class="field">
+          <label for="baseHeightInput">base_world_height</label>
+          <input id="baseHeightInput" name="base_world_height" type="number" step="1" value="100000" />
+        </div>
+        <div class="field">
+          <label for="agentCountInput">agent_count</label>
+          <input id="agentCountInput" name="agent_count" type="number" step="1" value="8200" />
+        </div>
+        <div class="field">
+          <label for="depositCountInput">deposit_count</label>
+          <input id="depositCountInput" name="deposit_count" type="number" step="1" value="10000" />
+        </div>
+        <div class="field full">
+          <label for="totalUnitsInput">total_resource_units</label>
+          <input id="totalUnitsInput" name="total_resource_units" type="number" step="1" value="10000000" />
+        </div>
+      </div>
+      <div class="form-actions">
+        <span id="formStatus"></span>
+        <button id="generateWorld" class="primary-button" type="submit">Generate World</button>
+      </div>
+    </form>
+  </section>
+
+  <header class="topbar">
+    <div class="title-stack">
+      <div id="title">ESC World Dashboard</div>
+      <div id="summary">Loading saved worlds...</div>
+    </div>
+    <div class="top-actions">
+      <button id="reset" class="control-button" type="button">Reset view</button>
+      <button id="refresh" class="control-button" type="button">Reload world</button>
+      <span class="settings-label">Settings</span>
+    </div>
+  </header>
 
   <div id="legend" class="panel">
     <h2>Legend</h2>
@@ -216,7 +738,7 @@ HTML_PAGE = r"""<!doctype html>
       <span>agent</span>
     </div>
     <div class="legend-row">
-      <span class="swatch" style="background:#0969da"></span>
+      <span class="swatch square" style="background:#0969da"></span>
       <span>machine</span>
     </div>
     <div id="resourceLegend"></div>
@@ -228,20 +750,29 @@ HTML_PAGE = r"""<!doctype html>
   </div>
 
   <div id="tooltip"></div>
-  <div id="loading">Loading world...</div>
+  <div id="loading" class="loading">Loading world...</div>
 
   <script>
     const canvas = document.getElementById("world");
     const ctx = canvas.getContext("2d");
     const summary = document.getElementById("summary");
+    const title = document.getElementById("title");
     const loading = document.getElementById("loading");
     const tooltip = document.getElementById("tooltip");
     const detailsBody = document.getElementById("detailsBody");
     const resourceLegend = document.getElementById("resourceLegend");
     const resetButton = document.getElementById("reset");
     const refreshButton = document.getElementById("refresh");
+    const collapseButton = document.getElementById("collapseSidebar");
+    const openCreateButton = document.getElementById("openCreate");
+    const closeCreateButton = document.getElementById("closeCreate");
+    const createPanel = document.getElementById("createPanel");
+    const createWorldForm = document.getElementById("createWorldForm");
+    const formStatus = document.getElementById("formStatus");
+    const generateWorldButton = document.getElementById("generateWorld");
+    const worldList = document.getElementById("worldList");
+    const worldSearch = document.getElementById("worldSearch");
 
-    // Fixed colors keep the same resource visually stable across reruns.
     const resourceColors = {
       iron_ore: "#b45309",
       copper_ore: "#ea580c",
@@ -257,6 +788,8 @@ HTML_PAGE = r"""<!doctype html>
 
     const state = {
       world: null,
+      worlds: [],
+      selectedWorldId: null,
       scale: 1,
       offsetX: 0,
       offsetY: 0,
@@ -271,6 +804,25 @@ HTML_PAGE = r"""<!doctype html>
       selectedNode: null,
       needsDraw: false,
     };
+    window.dashboardState = state;
+
+    function showLoading(message) {
+      loading.textContent = message || "Loading world...";
+      loading.classList.add("visible");
+    }
+
+    function hideLoading() {
+      loading.classList.remove("visible");
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
 
     function resizeCanvas() {
       const dpr = window.devicePixelRatio || 1;
@@ -288,7 +840,7 @@ HTML_PAGE = r"""<!doctype html>
       const metadata = state.world.metadata;
       const width = canvas.clientWidth;
       const height = canvas.clientHeight;
-      const margin = 96;
+      const margin = 110;
       const scaleX = (width - margin * 2) / metadata.world_width;
       const scaleY = (height - margin * 2) / metadata.world_height;
 
@@ -345,13 +897,14 @@ HTML_PAGE = r"""<!doctype html>
 
     function draw() {
       state.needsDraw = false;
-      if (!state.world) return;
 
       const width = canvas.clientWidth;
       const height = canvas.clientHeight;
       ctx.clearRect(0, 0, width, height);
       ctx.fillStyle = "#f6f8fa";
       ctx.fillRect(0, 0, width, height);
+
+      if (!state.world) return;
 
       drawMapBounds();
       drawDeposits();
@@ -474,7 +1027,7 @@ HTML_PAGE = r"""<!doctype html>
     function nodeToHtml(node) {
       return formatNode(node)
         .map(([key, value]) => (
-          `<div class="detail-row"><span class="detail-key">${key}</span><span>${value}</span></div>`
+          `<div class="detail-row"><span class="detail-key">${escapeHtml(key)}</span><span>${escapeHtml(value)}</span></div>`
         ))
         .join("");
     }
@@ -501,7 +1054,6 @@ HTML_PAGE = r"""<!doctype html>
       let best = null;
       let bestScore = Infinity;
 
-      // Deposits are checked first because they are larger and colored.
       for (const deposit of worldDeposits()) {
         const point = worldToScreen(deposit.coordinate);
         const dx = point.x - mouseX;
@@ -620,45 +1172,237 @@ HTML_PAGE = r"""<!doctype html>
         .map((resource) => (
           `<div class="legend-row">
             <span class="swatch" style="background:${resourceColors[resource] || "#6e7781"}"></span>
-            <span>${resource}</span>
+            <span>${escapeHtml(resource)}</span>
           </div>`
         ))
         .join("");
     }
 
-    async function loadWorld() {
-      loading.style.display = "grid";
+    function selectedWorldMeta() {
+      return state.worlds.find((world) => world.id === state.selectedWorldId) || null;
+    }
+
+    function renderWorldList() {
+      const query = worldSearch.value.trim().toLowerCase();
+      const filteredWorlds = state.worlds.filter((world) => {
+        const haystack = `${world.display_name} ${world.seed}`.toLowerCase();
+        return haystack.includes(query);
+      });
+
+      if (!filteredWorlds.length) {
+        worldList.innerHTML = `<div class="world-empty">No worlds match this search.</div>`;
+        return;
+      }
+
+      worldList.innerHTML = filteredWorlds
+        .map((world) => {
+          const active = world.id === state.selectedWorldId ? " active" : "";
+          return `<div class="world-row${active}" data-world-id="${escapeHtml(world.id)}">
+            <button class="world-main" type="button" data-action="select" data-world-id="${escapeHtml(world.id)}">
+              <span class="world-name">${escapeHtml(world.display_name)}</span>
+              <span class="world-meta">seed ${escapeHtml(world.seed)} · ${escapeHtml(world.created_at || "")}</span>
+            </button>
+            <button class="rename-button" type="button" data-action="rename" data-world-id="${escapeHtml(world.id)}" aria-label="Rename ${escapeHtml(world.display_name)}">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="2">
+                <path d="M12 20h9"></path>
+                <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
+              </svg>
+            </button>
+          </div>`;
+        })
+        .join("");
+    }
+
+    function renderWorldSummary() {
+      if (!state.world) {
+        title.textContent = "ESC World Dashboard";
+        summary.textContent = "No world selected";
+        return;
+      }
+
+      const meta = selectedWorldMeta();
+      const metadata = state.world.metadata;
+      const agentCount = worldAgents().length;
+      const depositCount = worldDeposits().length;
+      const machineCount = worldMachines().length;
+      const shapeSummary = metadata.world_shape === "circle"
+        ? `circle r ${metadata.world_radius.toLocaleString()}`
+        : `${metadata.world_width} x ${metadata.world_height}`;
+
+      title.textContent = meta ? meta.display_name : "Selected World";
+      summary.textContent = [
+        `seed ${metadata.seed}`,
+        shapeSummary,
+        formatAreaMultiplier(metadata.area_multiplier || 1),
+        `${agentCount.toLocaleString()} agents`,
+        `${depositCount.toLocaleString()} deposits`,
+        `${machineCount.toLocaleString()} machines`,
+        `${metadata.total_resource_units.toLocaleString()} resource units`,
+      ].join(" | ");
+    }
+
+    async function apiJson(url, options = {}) {
+      const response = await fetch(url, {
+        ...options,
+        headers: {
+          "Content-Type": "application/json",
+          ...(options.headers || {}),
+        },
+      });
+      const text = await response.text();
+      let data = null;
+      if (text) {
+        data = JSON.parse(text);
+      }
+      if (!response.ok) {
+        throw new Error(data?.error || `Request failed: ${response.status}`);
+      }
+      return data;
+    }
+
+    async function loadWorldList({ selectCurrent = true } = {}) {
+      const data = await apiJson("/api/worlds?cacheBust=" + Date.now());
+      state.worlds = data.worlds || [];
+      state.selectedWorldId = data.selected_world_id || state.worlds[0]?.id || null;
+      renderWorldList();
+
+      if (selectCurrent && state.selectedWorldId) {
+        await loadSelectedWorld(state.selectedWorldId);
+      } else {
+        renderWorldSummary();
+      }
+    }
+
+    async function loadSelectedWorld(worldId) {
+      if (!worldId) return;
+
+      showLoading("Loading world...");
       state.hoverNode = null;
       state.selectedNode = null;
       setDetails(null);
 
-      const response = await fetch("/world.json?cacheBust=" + Date.now());
+      const response = await fetch(`/api/world?id=${encodeURIComponent(worldId)}&cacheBust=${Date.now()}`);
       if (!response.ok) {
-        throw new Error("Could not load generated_world.json");
+        const text = await response.text();
+        throw new Error(text || "Could not load selected world");
       }
 
       state.world = await response.json();
+      state.selectedWorldId = worldId;
       renderLegend(state.world.metadata.resource_types);
-      const agentCount = worldAgents().length;
-      const depositCount = worldDeposits().length;
-      const machineCount = worldMachines().length;
-      const shapeSummary = state.world.metadata.world_shape === "circle"
-        ? `circle r ${state.world.metadata.world_radius.toLocaleString()}`
-        : `${state.world.metadata.world_width} x ${state.world.metadata.world_height}`;
-      summary.textContent = [
-        `seed ${state.world.metadata.seed}`,
-        shapeSummary,
-        formatAreaMultiplier(state.world.metadata.area_multiplier || 1),
-        `${agentCount.toLocaleString()} agents`,
-        `${depositCount.toLocaleString()} deposits`,
-        `${machineCount.toLocaleString()} machines`,
-        `${state.world.metadata.total_resource_units.toLocaleString()} resource units`,
-      ].join(" | ");
-
+      renderWorldSummary();
+      renderWorldList();
       fitWorldToScreen();
-      loading.style.display = "none";
+      hideLoading();
       requestDraw();
     }
+
+    async function renameWorld(worldId) {
+      const world = state.worlds.find((item) => item.id === worldId);
+      if (!world) return;
+
+      const nextName = window.prompt("Rename world", world.display_name);
+      if (!nextName || nextName.trim() === world.display_name) return;
+
+      await apiJson("/api/worlds/rename", {
+        method: "POST",
+        body: JSON.stringify({
+          id: worldId,
+          display_name: nextName.trim(),
+        }),
+      });
+      await loadWorldList({ selectCurrent: false });
+      renderWorldSummary();
+    }
+
+    function numberField(formData, name) {
+      const value = Number(formData.get(name));
+      if (!Number.isFinite(value)) {
+        throw new Error(`${name} must be a number`);
+      }
+      return value;
+    }
+
+    async function generateWorld(event) {
+      event.preventDefault();
+      formStatus.textContent = "";
+      formStatus.classList.remove("error");
+      generateWorldButton.disabled = true;
+      generateWorldButton.textContent = "Generating...";
+
+      try {
+        const formData = new FormData(createWorldForm);
+        const payload = {
+          display_name: String(formData.get("display_name") || "").trim(),
+          seed: Math.trunc(numberField(formData, "seed")),
+          base_world_width: Math.trunc(numberField(formData, "base_world_width")),
+          base_world_height: Math.trunc(numberField(formData, "base_world_height")),
+          area_multiplier: numberField(formData, "area_multiplier"),
+          agent_count: Math.trunc(numberField(formData, "agent_count")),
+          deposit_count: Math.trunc(numberField(formData, "deposit_count")),
+          total_resource_units: Math.trunc(numberField(formData, "total_resource_units")),
+        };
+
+        formStatus.textContent = "Generating world JSON...";
+        const data = await apiJson("/api/worlds/generate", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        createPanel.classList.remove("open");
+        await loadWorldList({ selectCurrent: false });
+        await loadSelectedWorld(data.world.id);
+      } catch (error) {
+        formStatus.textContent = error.message;
+        formStatus.classList.add("error");
+      } finally {
+        generateWorldButton.disabled = false;
+        generateWorldButton.textContent = "Generate World";
+      }
+    }
+
+    function updateWorldNameDefault() {
+      const seed = document.getElementById("seedInput").value || "42";
+      const nameInput = document.getElementById("displayNameInput");
+      if (!nameInput.value.trim() || /^Seed \d+$/.test(nameInput.value.trim())) {
+        nameInput.value = `Seed ${seed}`;
+      }
+    }
+
+    collapseButton.addEventListener("click", () => {
+      document.body.classList.toggle("sidebar-collapsed");
+      window.setTimeout(resizeCanvas, 190);
+    });
+
+    openCreateButton.addEventListener("click", () => {
+      createPanel.classList.toggle("open");
+    });
+
+    closeCreateButton.addEventListener("click", () => {
+      createPanel.classList.remove("open");
+    });
+
+    worldSearch.addEventListener("input", renderWorldList);
+
+    worldList.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-world-id]");
+      if (!button) return;
+
+      const worldId = button.dataset.worldId;
+      const action = button.dataset.action;
+      if (action === "select") {
+        loadSelectedWorld(worldId).catch((error) => {
+          showLoading(error.message);
+        });
+      }
+      if (action === "rename") {
+        renameWorld(worldId).catch((error) => {
+          showLoading(error.message);
+        });
+      }
+    });
+
+    createWorldForm.addEventListener("submit", generateWorld);
+    document.getElementById("seedInput").addEventListener("input", updateWorldNameDefault);
 
     resetButton.addEventListener("click", () => {
       if (!state.world) return;
@@ -667,8 +1411,8 @@ HTML_PAGE = r"""<!doctype html>
     });
 
     refreshButton.addEventListener("click", () => {
-      loadWorld().catch((error) => {
-        loading.textContent = error.message;
+      loadSelectedWorld(state.selectedWorldId).catch((error) => {
+        showLoading(error.message);
       });
     });
 
@@ -686,8 +1430,9 @@ HTML_PAGE = r"""<!doctype html>
     window.addEventListener("resize", resizeCanvas);
 
     resizeCanvas();
-    loadWorld().catch((error) => {
-      loading.textContent = error.message;
+    showLoading("Loading saved worlds...");
+    loadWorldList().catch((error) => {
+      showLoading(error.message);
     });
   </script>
 </body>
@@ -698,112 +1443,389 @@ HTML_PAGE = r"""<!doctype html>
 def parse_args():
     """Parse server settings."""
     parser = argparse.ArgumentParser(
-        description="Serve an interactive visualization for generated_world.json."
+        description="Serve the ESC world dashboard and world management API."
     )
     parser.add_argument("--world", default=DEFAULT_WORLD_PATH)
+    parser.add_argument("--index", default=DEFAULT_INDEX_PATH)
+    parser.add_argument("--worlds-dir", default=DEFAULT_WORLDS_DIR)
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     return parser.parse_args()
 
 
-def load_world_bytes(world_path):
-    """Read and lightly validate the JSON before serving it."""
-    path = Path(world_path)
-    if not path.exists():
-        raise FileNotFoundError(
-            f"{path} does not exist. Run world_generator.py first."
-        )
+def utc_now_iso():
+    """Return a compact UTC timestamp for the index."""
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
-    # Parse once at startup so JSON errors fail fast, then serve the bytes.
-    data = json.loads(path.read_text(encoding="utf-8"))
-    required_keys = {"metadata", "agents", "deposits", "machines", "coordinates"}
-    missing_keys = required_keys - set(data)
+
+def read_json(path):
+    """Read JSON from disk."""
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_json(path, data):
+    """Write readable JSON to disk."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def validate_world_file(path):
+    """Read and lightly validate a world JSON file."""
+    if not path.exists():
+        raise FileNotFoundError(f"{path} does not exist. Run world_generator.py first.")
+
+    data = read_json(path)
+    missing_keys = REQUIRED_WORLD_KEYS - set(data)
     if missing_keys:
         raise ValueError(f"World JSON is missing keys: {sorted(missing_keys)}")
 
-    return path.read_bytes()
+    return data
 
 
-def make_handler(world_path):
-    """Create a request handler bound to the selected JSON path."""
+def path_for_index(index_path, file_path):
+    """Resolve an index file_path relative to the index location."""
+    path = Path(file_path)
+    if path.is_absolute():
+        return path
+    return index_path.parent / path
 
-    class WorldViewerHandler(BaseHTTPRequestHandler):
-        def do_HEAD(self):
-            if self.path == "/" or self.path.startswith("/?"):
-                html_bytes = HTML_PAGE.encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(html_bytes)))
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
+
+def relative_to_index(index_path, file_path):
+    """Store file paths relative to the index when possible."""
+    path = Path(file_path)
+    try:
+        return str(path.resolve().relative_to(index_path.parent.resolve()))
+    except ValueError:
+        return str(path)
+
+
+def default_world_entry(default_world_path, index_path):
+    """Build an index entry for the existing generated_world.json."""
+    world = validate_world_file(default_world_path)
+    seed = world["metadata"].get("seed", DEFAULT_SEED)
+    created_at = datetime.fromtimestamp(
+        default_world_path.stat().st_mtime,
+        tz=timezone.utc,
+    ).replace(microsecond=0)
+
+    return {
+        "id": f"default_seed_{seed}",
+        "display_name": f"Default Seed {seed}",
+        "seed": seed,
+        "file_path": relative_to_index(index_path, default_world_path),
+        "created_at": created_at.isoformat(),
+    }
+
+
+def normalize_index(index):
+    """Keep the index shape predictable for the browser."""
+    if not isinstance(index, dict):
+        index = {}
+
+    worlds = index.get("worlds")
+    if not isinstance(worlds, list):
+        worlds = []
+
+    normalized_worlds = []
+    for world in worlds:
+        if not isinstance(world, dict):
+            continue
+        if not world.get("id") or not world.get("file_path"):
+            continue
+        normalized_worlds.append(world)
+
+    selected_world_id = index.get("selected_world_id")
+    if selected_world_id not in {world["id"] for world in normalized_worlds}:
+        selected_world_id = normalized_worlds[0]["id"] if normalized_worlds else None
+
+    return {
+        "selected_world_id": selected_world_id,
+        "worlds": normalized_worlds,
+    }
+
+
+def ensure_index(index_path, default_world_path):
+    """Create or normalize worlds_index.json."""
+    with INDEX_LOCK:
+        if index_path.exists():
+            index = normalize_index(read_json(index_path))
+        else:
+            index = {"selected_world_id": None, "worlds": []}
+
+        if not index["worlds"] and default_world_path.exists():
+            entry = default_world_entry(default_world_path, index_path)
+            index["worlds"].append(entry)
+            index["selected_world_id"] = entry["id"]
+
+        write_json(index_path, index)
+        return index
+
+
+def load_index(index_path, default_world_path):
+    """Load the world index, creating it if needed."""
+    return ensure_index(index_path, default_world_path)
+
+
+def save_index(index_path, index):
+    """Persist the normalized index."""
+    write_json(index_path, normalize_index(index))
+
+
+def find_world_entry(index, world_id):
+    """Return the world index entry for an id."""
+    for world in index["worlds"]:
+        if world["id"] == world_id:
+            return world
+    raise KeyError(f"Unknown world id: {world_id}")
+
+
+def selected_or_requested_world_id(index, requested_id):
+    """Choose the requested world id, falling back to the selected id."""
+    if requested_id:
+        return requested_id
+    if index["selected_world_id"]:
+        return index["selected_world_id"]
+    if index["worlds"]:
+        return index["worlds"][0]["id"]
+    raise KeyError("No worlds are available.")
+
+
+def load_world_bytes(index_path, default_world_path, requested_id=None):
+    """Load the selected world JSON bytes."""
+    with INDEX_LOCK:
+        index = load_index(index_path, default_world_path)
+        world_id = selected_or_requested_world_id(index, requested_id)
+        entry = find_world_entry(index, world_id)
+        path = path_for_index(index_path, entry["file_path"])
+        validate_world_file(path)
+        return path.read_bytes()
+
+
+def unique_display_name(index, requested_name, seed):
+    """Return a display name that does not collide with existing worlds."""
+    base_name = requested_name.strip() if requested_name else f"Seed {seed}"
+    existing_names = {world.get("display_name", "") for world in index["worlds"]}
+    if base_name not in existing_names:
+        return base_name
+
+    suffix = 2
+    while f"{base_name} ({suffix})" in existing_names:
+        suffix += 1
+    return f"{base_name} ({suffix})"
+
+
+def unique_world_id(seed):
+    """Return a unique id suitable for a saved world file."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"world_seed_{seed}_{stamp}_{uuid.uuid4().hex[:8]}"
+
+
+def int_setting(payload, key):
+    """Read an integer setting from a request payload."""
+    value = payload.get(key)
+    if isinstance(value, bool):
+        raise ValueError(f"{key} must be an integer.")
+    try:
+        value = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{key} must be an integer.") from error
+    return value
+
+
+def float_setting(payload, key):
+    """Read a floating point setting from a request payload."""
+    value = payload.get(key)
+    if isinstance(value, bool):
+        raise ValueError(f"{key} must be a number.")
+    try:
+        value = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{key} must be a number.") from error
+    return value
+
+
+def generate_world_from_payload(index_path, default_world_path, worlds_dir, payload):
+    """Generate a world, save it, and append it to the world index."""
+    seed = int_setting(payload, "seed")
+    base_world_width = int_setting(payload, "base_world_width")
+    base_world_height = int_setting(payload, "base_world_height")
+    area_multiplier = float_setting(payload, "area_multiplier")
+    agent_count = int_setting(payload, "agent_count")
+    deposit_count = int_setting(payload, "deposit_count")
+    total_resource_units = int_setting(payload, "total_resource_units")
+
+    world = build_world(
+        seed=seed,
+        base_world_width=base_world_width,
+        base_world_height=base_world_height,
+        area_multiplier=area_multiplier,
+        agent_count=agent_count,
+        deposit_count=deposit_count,
+        total_resource_units=total_resource_units,
+    )
+
+    with INDEX_LOCK:
+        index = load_index(index_path, default_world_path)
+        world_id = unique_world_id(seed)
+        output_path = worlds_dir / f"{world_id}.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        save_world(world, output_path)
+
+        entry = {
+            "id": world_id,
+            "display_name": unique_display_name(
+                index,
+                str(payload.get("display_name", "")),
+                seed,
+            ),
+            "seed": seed,
+            "file_path": relative_to_index(index_path, output_path),
+            "created_at": utc_now_iso(),
+        }
+        index["worlds"].insert(0, entry)
+        index["selected_world_id"] = world_id
+        save_index(index_path, index)
+
+    return entry
+
+
+def rename_world(index_path, default_world_path, payload):
+    """Rename a world display name in the index."""
+    world_id = str(payload.get("id", "")).strip()
+    display_name = str(payload.get("display_name", "")).strip()
+    if not world_id:
+        raise ValueError("World id is required.")
+    if not display_name:
+        raise ValueError("Display name is required.")
+
+    with INDEX_LOCK:
+        index = load_index(index_path, default_world_path)
+        entry = find_world_entry(index, world_id)
+        existing_names = {
+            world.get("display_name", "")
+            for world in index["worlds"]
+            if world["id"] != world_id
+        }
+        if display_name in existing_names:
+            raise ValueError("Another world already uses that display name.")
+        entry["display_name"] = display_name
+        save_index(index_path, index)
+        return entry
+
+
+def public_index(index_path, default_world_path):
+    """Return the index payload sent to the browser."""
+    with INDEX_LOCK:
+        index = load_index(index_path, default_world_path)
+        return {
+            "selected_world_id": index["selected_world_id"],
+            "worlds": index["worlds"],
+        }
+
+
+def make_handler(index_path, default_world_path, worlds_dir):
+    """Create a request handler bound to the selected dashboard paths."""
+
+    class WorldDashboardHandler(BaseHTTPRequestHandler):
+        def send_bytes(self, status, body, content_type):
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+
+        def send_json(self, status, payload):
+            body = json.dumps(payload).encode("utf-8")
+            self.send_bytes(status, body, "application/json; charset=utf-8")
+
+        def send_text(self, status, message):
+            self.send_bytes(
+                status,
+                str(message).encode("utf-8"),
+                "text/plain; charset=utf-8",
+            )
+
+        def read_json_body(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0:
+                return {}
+            return json.loads(self.rfile.read(length).decode("utf-8"))
+
+        def handle_request(self, include_body=True):
+            parsed = urlparse(self.path)
+
+            if parsed.path == "/":
+                self.send_bytes(
+                    200,
+                    HTML_PAGE.encode("utf-8"),
+                    "text/html; charset=utf-8",
+                )
                 return
 
-            if self.path.startswith("/world.json"):
+            if parsed.path == "/api/worlds":
+                self.send_json(200, public_index(index_path, default_world_path))
+                return
+
+            if parsed.path in {"/api/world", "/world.json"}:
+                query = parse_qs(parsed.query)
+                world_id = query.get("id", [None])[0]
                 try:
-                    world_bytes = load_world_bytes(world_path)
+                    world_bytes = load_world_bytes(
+                        index_path,
+                        default_world_path,
+                        world_id,
+                    )
                 except Exception as error:
-                    error_bytes = str(error).encode("utf-8")
-                    self.send_response(500)
-                    self.send_header("Content-Type", "text/plain; charset=utf-8")
-                    self.send_header("Content-Length", str(len(error_bytes)))
-                    self.end_headers()
+                    self.send_text(500, error)
                     return
 
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Length", str(len(world_bytes)))
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
+                self.send_bytes(200, world_bytes, "application/json; charset=utf-8")
                 return
 
-            self.send_response(404)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.end_headers()
+            self.send_text(404, "Not found")
+
+        def do_HEAD(self):
+            self.handle_request(include_body=False)
 
         def do_GET(self):
-            if self.path == "/" or self.path.startswith("/?"):
-                html_bytes = HTML_PAGE.encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(html_bytes)))
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(html_bytes)
-                return
+            self.handle_request()
 
-            if self.path.startswith("/world.json"):
-                try:
-                    world_bytes = load_world_bytes(world_path)
-                except Exception as error:
-                    self.send_response(500)
-                    self.send_header("Content-Type", "text/plain; charset=utf-8")
-                    self.end_headers()
-                    self.wfile.write(str(error).encode("utf-8"))
+        def do_POST(self):
+            parsed = urlparse(self.path)
+
+            try:
+                payload = self.read_json_body()
+                if parsed.path == "/api/worlds/generate":
+                    entry = generate_world_from_payload(
+                        index_path,
+                        default_world_path,
+                        worlds_dir,
+                        payload,
+                    )
+                    self.send_json(200, {"world": entry})
                     return
 
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Length", str(len(world_bytes)))
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(world_bytes)
-                return
+                if parsed.path == "/api/worlds/rename":
+                    entry = rename_world(index_path, default_world_path, payload)
+                    self.send_json(200, {"world": entry})
+                    return
 
-            self.send_response(404)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(b"Not found")
+                self.send_text(404, "Not found")
+            except Exception as error:
+                self.send_json(400, {"error": str(error)})
 
         def log_message(self, format_string, *args):
             """Keep terminal output quiet unless there is a real server error."""
             return
 
-    return WorldViewerHandler
+    return WorldDashboardHandler
 
 
-def start_server(host, port, world_path):
+def start_server(host, port, index_path, default_world_path, worlds_dir):
     """Start the HTTP server, trying nearby ports if the default is busy."""
-    handler = make_handler(world_path)
+    handler = make_handler(index_path, default_world_path, worlds_dir)
     last_error = None
 
     for candidate_port in range(port, port + 50):
@@ -818,10 +1840,20 @@ def start_server(host, port, world_path):
 
 def main():
     args = parse_args()
-    load_world_bytes(args.world)
-    server, actual_port = start_server(args.host, args.port, args.world)
+    index_path = Path(args.index)
+    default_world_path = Path(args.world)
+    worlds_dir = Path(args.worlds_dir)
 
-    print(f"Serving {args.world}", flush=True)
+    ensure_index(index_path, default_world_path)
+    server, actual_port = start_server(
+        args.host,
+        args.port,
+        index_path,
+        default_world_path,
+        worlds_dir,
+    )
+
+    print(f"Serving dashboard with {index_path}", flush=True)
     print(f"Open http://{args.host}:{actual_port}", flush=True)
     print("Press Ctrl+C to stop.", flush=True)
 

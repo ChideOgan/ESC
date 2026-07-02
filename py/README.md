@@ -14,9 +14,11 @@ There is no mining, movement, recipe, trade, price, market, or supply-chain logi
 
 ## Files
 
-- `world_generator.py` creates and validates `generated_world.json`.
-- `generated_world.json` is the generated world state.
-- `visualize_world.py` serves a browser-based canvas visualizer.
+- `world_generator.py` creates and validates world JSON files.
+- `generated_world.json` is the first default generated world state.
+- `visualize_world.py` serves the browser dashboard and world-management API.
+- `worlds_index.json` tracks saved worlds for the dashboard sidebar.
+- `worlds/` is where newly generated dashboard worlds are saved.
 - `README.md` explains how to run the current step.
 
 ## Generate The World
@@ -59,7 +61,7 @@ circle area = base_world_width * base_world_height * area_multiplier
 
 With the defaults, the generated circle radius is about `97,721`.
 
-## Visualize The World
+## Run The Dashboard
 
 ```bash
 python3 visualize_world.py
@@ -71,7 +73,8 @@ Then open the printed URL, usually:
 http://127.0.0.1:8000
 ```
 
-The visualizer loads directly from `generated_world.json`.
+The dashboard opens with a floating dark sidebar and loads the selected world
+from `worlds_index.json`.
 
 Controls:
 
@@ -80,7 +83,54 @@ Controls:
 - hover a node for details
 - click a node to pin details
 - use `Reset view` to fit the full world again
-- use `Reload JSON` after regenerating the world
+- use `Reload world` after changing the selected world file
+- use the sidebar search to filter worlds by display name or seed
+- use the sidebar edit icon to rename a world display name
+- use the world icon in the sidebar to open the Create World panel
+
+## Generate A World From The UI
+
+1. Run the dashboard with `python3 visualize_world.py`.
+2. Open `http://127.0.0.1:8000`.
+3. Click the world/create icon at the top of the sidebar.
+4. Adjust the generation settings.
+5. Click `Generate World`.
+
+The dashboard calls the same `world_generator.py` logic, saves the new world as
+a separate JSON file under `worlds/`, adds it to `worlds_index.json`, and loads
+it into the canvas.
+
+The Create World panel currently supports:
+
+- `seed`
+- `base_world_width`
+- `base_world_height`
+- `area_multiplier`
+- `agent_count`
+- `deposit_count`
+- `total_resource_units`
+- `output / world name`
+
+This still only generates static world snapshots. It does not start a running
+simulation.
+
+## Saved Worlds
+
+`worlds_index.json` is a lightweight dashboard index. It tracks:
+
+- `id`
+- `display_name`
+- `seed`
+- `file_path`
+- `created_at`
+
+The default generated world is indexed as `generated_world.json`. New worlds
+created from the UI are saved separately in `worlds/` and do not overwrite the
+default file.
+
+The dashboard sidebar reads from `worlds_index.json`. Clicking a world loads its
+JSON into the visualization. Renaming a world only changes the display name in
+the index; it does not rewrite the world JSON.
 
 ## Resource Colors
 
