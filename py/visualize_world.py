@@ -1281,6 +1281,7 @@ HTML_PAGE = r"""<!doctype html>
     }
 
     function renderLegend(resourceTypes) {
+      legendPanel.hidden = resourceTypes.length === 0;
       resourceLegend.innerHTML = resourceTypes
         .map((resource) => (
           `<div class="legend-row">
@@ -1305,7 +1306,7 @@ HTML_PAGE = r"""<!doctype html>
       });
 
       if (!state.worlds.length) {
-        worldList.innerHTML = `<div class="world-empty">No worlds yet. Use the create icon to generate the first one.</div>`;
+        worldList.innerHTML = "";
         return;
       }
 
@@ -1336,7 +1337,7 @@ HTML_PAGE = r"""<!doctype html>
 
     function renderWorldSummary() {
       if (!state.world) {
-        title.textContent = "ESC World Dashboard";
+        title.textContent = "None";
         summary.textContent = "No world selected";
         return;
       }
@@ -1410,6 +1411,7 @@ HTML_PAGE = r"""<!doctype html>
       if (!worldId) {
         state.world = null;
         state.selectedWorldId = null;
+        renderLegend([]);
         renderWorldSummary();
         hideLoading();
         requestDraw();
