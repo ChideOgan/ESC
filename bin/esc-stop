@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PORT="${1:-8000}"
+
+pids="$(lsof -tiTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null || true)"
+if [[ -z "${pids}" ]]; then
+  echo "No process is listening on port ${PORT}."
+  exit 0
+fi
+
+echo "Stopping listener(s) on port ${PORT}: ${pids}"
+kill ${pids} 2>/dev/null || true
+sleep 0.5
+
+remaining_pids="$(lsof -tiTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null || true)"
+if [[ -n "${remaining_pids}" ]]; then
+  echo "Force-stopping stubborn listener(s) on port ${PORT}: ${remaining_pids}"
+  kill -9 ${remaining_pids} 2>/dev/null || true
+fi
+
+echo "Port ${PORT} is clear."

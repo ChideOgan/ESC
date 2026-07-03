@@ -794,7 +794,7 @@ HTML_PAGE = r"""<!doctype html>
     const resourceColors = {
       iron_ore: "#9a5a2e",
       copper_ore: "#f97316",
-      coal: "#4b5563",
+      coal: "#facc15",
       stone: "#a8a29e",
       crude_oil: "#7c3aed",
       water: "#2563eb",

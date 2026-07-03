@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PORT="${1:-8000}"
+HOST="${ESC_HOST:-127.0.0.1}"
+
+pids="$(lsof -tiTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null || true)"
+if [[ -z "${pids}" ]]; then
+  echo "ESC dashboard is not listening on port ${PORT}."
+  exit 0
+fi
+
+echo "Listener(s) on port ${PORT}: ${pids}"
+ps -p ${pids} -o pid,command
+
+if curl -sL -o /dev/null "http://${HOST}:${PORT}/"; then
+  echo "Dashboard URL is responding: http://${HOST}:${PORT}/"
+else
+  echo "Port ${PORT} is occupied, but the dashboard URL did not respond cleanly."
+fi

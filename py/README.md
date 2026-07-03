@@ -62,7 +62,33 @@ With the defaults, the generated circle radius is about `97,721`.
 
 ## Run The Dashboard
 
+From any Terminal folder after opening a new Terminal tab:
+
 ```bash
+esc-start
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000
+```
+
+Useful helper commands:
+
+```bash
+esc-status   # check whether the dashboard is running on port 8000
+esc-stop     # stop whatever is listening on port 8000
+esc-start    # clear port 8000 and start the dashboard again
+```
+
+These aliases are added to `~/.zshrc`, so open a new Terminal tab or run
+`source ~/.zshrc` before using them in an already-open terminal.
+
+Manual fallback:
+
+```bash
+cd /Users/chide/Desktop/ESC/py
 python3 visualize_world.py
 ```
 
