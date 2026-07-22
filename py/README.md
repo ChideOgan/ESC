@@ -112,6 +112,7 @@ Controls:
 - use `Reload world` after changing the selected world file
 - use the sidebar search to filter worlds by display name or seed
 - use the create icon in the sidebar to open the Create World panel
+- use the trash icon next to a saved world to delete that world after confirming
 
 ## Generate A World From The UI
 
@@ -120,6 +121,10 @@ Controls:
 3. Click the create icon at the top of the sidebar.
 4. Adjust the generation settings.
 5. Click `Generate World`.
+
+The seed field defaults to `42`. Reusing the same numeric seed intentionally
+reproduces the same generated world. Use a different seed when you want a
+different generated layout.
 
 The dashboard calls the same `world_generator.py` logic, saves the new world as
 a separate JSON file under `worlds/`, adds it to `worlds_index.json`, and loads
@@ -154,6 +159,9 @@ not require a global `generated_world.json` file anymore.
 
 The dashboard sidebar reads from `worlds_index.json`. Clicking a world loads its
 JSON into the visualization.
+
+Deleting a world from the sidebar removes its `worlds_index.json` entry and
+deletes the saved world JSON file under `worlds/`.
 
 ## Resource Colors
 

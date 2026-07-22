@@ -119,6 +119,9 @@ Then open:
 http://127.0.0.1:8000
 ```
 
+Reusing the same numeric seed intentionally reproduces the same generated world.
+Use a different seed when you want a different generated layout.
+
 Useful local commands:
 
 ```bash
@@ -147,4 +150,3 @@ py/
   visualize_world.py   serve the dashboard and world-management API
   README.md            implementation notes for the current Python prototype
 ```
-

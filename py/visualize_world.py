@@ -243,19 +243,27 @@ HTML_PAGE = r"""<!doctype html>
       font-size: 11px;
     }
 
-    .world-more-icon {
+    .world-delete-button {
       display: grid;
       place-items: center;
       width: 30px;
       height: 30px;
       color: #8c959f;
-      pointer-events: none;
+      background: transparent;
+      border: 0;
+      border-radius: 8px;
+      cursor: pointer;
     }
 
-    .world-more-icon svg {
+    .world-delete-button:hover {
+      color: var(--danger);
+      background: #fff1f0;
+    }
+
+    .world-delete-button svg {
       width: 16px;
       height: 16px;
-      fill: currentColor;
+      stroke: currentColor;
     }
 
     .sidebar-footer {
@@ -502,6 +510,73 @@ HTML_PAGE = r"""<!doctype html>
 
     .loading.visible {
       display: grid;
+    }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 12;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      background: rgba(27, 31, 36, 0.28);
+    }
+
+    .modal-backdrop[hidden] {
+      display: none;
+    }
+
+    .confirm-dialog {
+      width: min(360px, 100%);
+      padding: 18px;
+      background: #ffffff;
+      border: 1px solid var(--panel-border);
+      border-radius: 14px;
+      box-shadow: 0 24px 70px rgba(27, 31, 36, 0.22);
+    }
+
+    .confirm-dialog h2 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .confirm-dialog p {
+      margin: 10px 0 18px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .dialog-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .dialog-button {
+      height: 34px;
+      padding: 0 13px;
+      color: var(--muted);
+      background: #ffffff;
+      border: 1px solid var(--panel-border);
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    .dialog-button:hover {
+      border-color: var(--accent);
+    }
+
+    .dialog-button.confirm {
+      color: #ffffff;
+      background: var(--danger);
+      border-color: var(--danger);
+    }
+
+    .dialog-button:disabled {
+      cursor: not-allowed;
+      opacity: 0.65;
     }
 
     .create-panel {
@@ -767,6 +842,17 @@ HTML_PAGE = r"""<!doctype html>
   <div id="tooltip"></div>
   <div id="loading" class="loading">Loading world...</div>
 
+  <div id="deleteDialog" class="modal-backdrop" hidden>
+    <section class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="deleteDialogTitle">
+      <h2 id="deleteDialogTitle">Delete World</h2>
+      <p id="deleteDialogMessage">Delete this generated world?</p>
+      <div class="dialog-actions">
+        <button id="cancelDelete" class="dialog-button" type="button">Cancel</button>
+        <button id="confirmDelete" class="dialog-button confirm" type="button">Confirm</button>
+      </div>
+    </section>
+  </div>
+
   <script>
     const canvas = document.getElementById("world");
     const ctx = canvas.getContext("2d");
@@ -788,8 +874,14 @@ HTML_PAGE = r"""<!doctype html>
     const createWorldForm = document.getElementById("createWorldForm");
     const formStatus = document.getElementById("formStatus");
     const generateWorldButton = document.getElementById("generateWorld");
+    const seedInput = document.getElementById("seedInput");
+    const displayNameInput = document.getElementById("displayNameInput");
     const worldList = document.getElementById("worldList");
     const worldSearch = document.getElementById("worldSearch");
+    const deleteDialog = document.getElementById("deleteDialog");
+    const deleteDialogMessage = document.getElementById("deleteDialogMessage");
+    const cancelDeleteButton = document.getElementById("cancelDelete");
+    const confirmDeleteButton = document.getElementById("confirmDelete");
 
     const resourceColors = {
       iron_ore: "#9a5a2e",
@@ -821,6 +913,7 @@ HTML_PAGE = r"""<!doctype html>
       dragOffsetY: 0,
       hoverNode: null,
       selectedNode: null,
+      pendingDeleteWorldId: null,
       needsDraw: false,
     };
     window.dashboardState = state;
@@ -1323,13 +1416,15 @@ HTML_PAGE = r"""<!doctype html>
               <span class="world-name">${escapeHtml(world.display_name)}</span>
               <span class="world-meta">seed ${escapeHtml(world.seed)} · ${escapeHtml(world.created_at || "")}</span>
             </button>
-            <span class="world-more-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
-                <circle cx="6" cy="12" r="1.8"></circle>
-                <circle cx="12" cy="12" r="1.8"></circle>
-                <circle cx="18" cy="12" r="1.8"></circle>
+            <button class="world-delete-button" type="button" data-action="delete" data-world-id="${escapeHtml(world.id)}" aria-label="Delete ${escapeHtml(world.display_name)}">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 6h18"></path>
+                <path d="M8 6V4h8v2"></path>
+                <path d="M19 6 18 20H6L5 6"></path>
+                <path d="M10 11v5"></path>
+                <path d="M14 11v5"></path>
               </svg>
-            </span>
+            </button>
           </div>`;
         })
         .join("");
@@ -1485,10 +1580,46 @@ HTML_PAGE = r"""<!doctype html>
     }
 
     function updateWorldNameDefault() {
-      const seed = document.getElementById("seedInput").value || "42";
-      const nameInput = document.getElementById("displayNameInput");
-      if (!nameInput.value.trim() || /^Seed \d+$/.test(nameInput.value.trim())) {
-        nameInput.value = `Seed ${seed}`;
+      const seed = seedInput.value || "42";
+      if (!displayNameInput.value.trim() || /^Seed \d+$/.test(displayNameInput.value.trim())) {
+        displayNameInput.value = `Seed ${seed}`;
+      }
+    }
+
+    function openDeleteDialog(worldId) {
+      const world = state.worlds.find((item) => item.id === worldId);
+      state.pendingDeleteWorldId = worldId;
+      deleteDialogMessage.textContent = world
+        ? `Delete "${world.display_name}"? This removes it from the sidebar and deletes its saved JSON file.`
+        : "Delete this generated world?";
+      confirmDeleteButton.disabled = false;
+      confirmDeleteButton.textContent = "Confirm";
+      deleteDialog.hidden = false;
+      confirmDeleteButton.focus();
+    }
+
+    function closeDeleteDialog() {
+      state.pendingDeleteWorldId = null;
+      deleteDialog.hidden = true;
+    }
+
+    async function confirmDeleteWorld() {
+      const worldId = state.pendingDeleteWorldId;
+      if (!worldId) return;
+
+      confirmDeleteButton.disabled = true;
+      confirmDeleteButton.textContent = "Deleting...";
+
+      try {
+        await apiJson(`/api/world?id=${encodeURIComponent(worldId)}`, {
+          method: "DELETE",
+        });
+        closeDeleteDialog();
+        await loadWorldList();
+      } catch (error) {
+        deleteDialogMessage.textContent = error.message;
+        confirmDeleteButton.disabled = false;
+        confirmDeleteButton.textContent = "Confirm";
       }
     }
 
@@ -1517,11 +1648,25 @@ HTML_PAGE = r"""<!doctype html>
         loadSelectedWorld(worldId).catch((error) => {
           showLoading(error.message);
         });
+      } else if (action === "delete") {
+        openDeleteDialog(worldId);
       }
     });
 
     createWorldForm.addEventListener("submit", generateWorld);
-    document.getElementById("seedInput").addEventListener("input", updateWorldNameDefault);
+    seedInput.addEventListener("input", updateWorldNameDefault);
+    cancelDeleteButton.addEventListener("click", closeDeleteDialog);
+    confirmDeleteButton.addEventListener("click", confirmDeleteWorld);
+    deleteDialog.addEventListener("click", (event) => {
+      if (event.target === deleteDialog) {
+        closeDeleteDialog();
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !deleteDialog.hidden) {
+        closeDeleteDialog();
+      }
+    });
 
     resetButton.addEventListener("click", () => {
       if (!state.world) return;
@@ -1797,6 +1942,47 @@ def generate_world_from_payload(index_path, worlds_dir, payload):
     return entry
 
 
+def delete_world_from_index(index_path, worlds_dir, world_id):
+    """Delete one saved world file and remove it from the dashboard index."""
+    if not world_id:
+        raise ValueError("Missing world id.")
+
+    with INDEX_LOCK:
+        index = load_index(index_path)
+        entry = find_world_entry(index, world_id)
+        world_path = path_for_index(index_path, entry["file_path"])
+        deleted_file = False
+
+        if world_path.exists():
+            try:
+                world_path.resolve().relative_to(worlds_dir.resolve())
+            except ValueError as error:
+                raise ValueError(
+                    "Refusing to delete a world file outside the worlds directory."
+                ) from error
+
+            world_path.unlink()
+            deleted_file = True
+
+        index["worlds"] = [
+            world for world in index["worlds"] if world["id"] != world_id
+        ]
+        if index["selected_world_id"] == world_id:
+            index["selected_world_id"] = (
+                index["worlds"][0]["id"] if index["worlds"] else None
+            )
+
+        save_index(index_path, index)
+        index = load_index(index_path)
+
+    return {
+        "deleted_world_id": world_id,
+        "deleted_file": deleted_file,
+        "selected_world_id": index["selected_world_id"],
+        "worlds": index["worlds"],
+    }
+
+
 def public_index(index_path):
     """Return the index payload sent to the browser."""
     with INDEX_LOCK:
@@ -1887,6 +2073,25 @@ def make_handler(index_path, worlds_dir):
                     return
 
                 self.send_text(404, "Not found")
+            except Exception as error:
+                self.send_json(400, {"error": str(error)})
+
+        def do_DELETE(self):
+            parsed = urlparse(self.path)
+
+            try:
+                if parsed.path == "/api/world":
+                    query = parse_qs(parsed.query)
+                    world_id = query.get("id", [None])[0]
+                    self.send_json(
+                        200,
+                        delete_world_from_index(index_path, worlds_dir, world_id),
+                    )
+                    return
+
+                self.send_text(404, "Not found")
+            except KeyError as error:
+                self.send_json(404, {"error": str(error)})
             except Exception as error:
                 self.send_json(400, {"error": str(error)})
 
