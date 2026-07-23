@@ -3,6 +3,7 @@ set -euo pipefail
 
 PORT="${1:-8000}"
 HOST="${ESC_HOST:-127.0.0.1}"
+KEEP_AWAKE="${ESC_KEEP_AWAKE:-0}"
 PROJECT_DIR="/Users/chide/Desktop/ESC/py"
 LOG_DIR="/Users/chide/Desktop/ESC/.logs"
 PID_FILE="${LOG_DIR}/esc-dashboard-${PORT}.pid"
@@ -24,7 +25,16 @@ if [[ -n "${existing_pids}" ]]; then
 fi
 
 cd "${PROJECT_DIR}"
-nohup python3 visualize_world.py --host "${HOST}" --port "${PORT}" > "${LOG_FILE}" 2>&1 &
+server_command=(python3 visualize_world.py --host "${HOST}" --port "${PORT}")
+if [[ "${KEEP_AWAKE}" == "1" || "${KEEP_AWAKE}" == "true" ]]; then
+  if command -v caffeinate >/dev/null 2>&1; then
+    server_command=(caffeinate -dimsu "${server_command[@]}")
+  else
+    echo "ESC_KEEP_AWAKE was set, but caffeinate was not found. Starting normally."
+  fi
+fi
+
+nohup "${server_command[@]}" > "${LOG_FILE}" 2>&1 &
 server_pid="$!"
 echo "${server_pid}" > "${PID_FILE}"
 
@@ -39,3 +49,6 @@ echo "ESC dashboard started."
 echo "URL: http://${HOST}:${PORT}/"
 echo "PID: ${server_pid}"
 echo "Log: ${LOG_FILE}"
+if [[ "${KEEP_AWAKE}" == "1" || "${KEEP_AWAKE}" == "true" ]]; then
+  echo "Keep-awake mode: on"
+fi

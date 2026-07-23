@@ -5,22 +5,31 @@ The dashboard is intentionally still a Step 1 tool:
 - it lists saved generated worlds,
 - it can generate another static world from form settings,
 - it renders the selected world on a canvas,
+- it can run the one-agent brain lab in memory for one-agent worlds.
 
-There is no simulation loop here. No agents move, mine, trade, message, price,
-or act. The browser only manages and inspects generated world snapshots.
+There is still no mining, trade, messaging, pricing, production, or economy
+logic here. The only live mutation is the one-agent brain-lab movement loop.
 """
 
 import argparse
 import json
+import random
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from brain import (
+    InternalMapBrain,
+    WorldEnvironment,
+    prediction_error,
+)
 from world_generator import (
     build_world,
+    coordinate_key,
     save_world,
 )
 
@@ -395,6 +404,32 @@ HTML_PAGE = r"""<!doctype html>
 
     .control-button:hover {
       border-color: var(--accent);
+    }
+
+    .brain-controls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .icon-control-button {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      padding: 0;
+    }
+
+    .icon-control-button svg {
+      width: 16px;
+      height: 16px;
+      stroke-width: 2.2;
+    }
+
+    .icon-control-button.is-active {
+      color: var(--accent);
+      border-color: var(--accent);
+      background: #eff6ff;
     }
 
     .primary-button {
@@ -816,6 +851,19 @@ HTML_PAGE = r"""<!doctype html>
       <div id="summary">Loading saved worlds...</div>
     </div>
     <div class="top-actions">
+      <div class="brain-controls" aria-label="Brain controls">
+        <button id="playBrain" class="control-button icon-control-button" type="button" aria-label="Play brain">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+            <polygon points="6 4 20 12 6 20 6 4"></polygon>
+          </svg>
+        </button>
+        <button id="pauseBrain" class="control-button icon-control-button" type="button" aria-label="Pause brain">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+            <rect x="6" y="4" width="4" height="16"></rect>
+            <rect x="14" y="4" width="4" height="16"></rect>
+          </svg>
+        </button>
+      </div>
       <button id="reset" class="control-button" type="button">Reset view</button>
       <button id="refresh" class="control-button" type="button">Reload world</button>
     </div>
@@ -867,6 +915,8 @@ HTML_PAGE = r"""<!doctype html>
     const legendPanel = document.getElementById("legend");
     const resetButton = document.getElementById("reset");
     const refreshButton = document.getElementById("refresh");
+    const playBrainButton = document.getElementById("playBrain");
+    const pauseBrainButton = document.getElementById("pauseBrain");
     const collapseButton = document.getElementById("collapseSidebar");
     const openCreateButton = document.getElementById("openCreate");
     const closeCreateButton = document.getElementById("closeCreate");
@@ -914,6 +964,13 @@ HTML_PAGE = r"""<!doctype html>
       hoverNode: null,
       selectedNode: null,
       pendingDeleteWorldId: null,
+      brainRunning: false,
+      brainBusy: false,
+      brainStream: null,
+      brainStreamWorldId: null,
+      brainIterations: 0,
+      brainStepsPerTick: 1,
+      brainServerIntervalMs: 10,
       needsDraw: false,
     };
     window.dashboardState = state;
@@ -1446,7 +1503,8 @@ HTML_PAGE = r"""<!doctype html>
         ? `circle r ${metadata.world_radius.toLocaleString()}`
         : `${metadata.world_width} x ${metadata.world_height}`;
 
-      title.textContent = meta ? meta.display_name : "Selected World";
+      const displayName = meta ? meta.display_name : "Selected World";
+      title.textContent = `${displayName} - ${state.brainIterations.toLocaleString()}`;
       summary.textContent = [
         `seed ${metadata.seed}`,
         shapeSummary,
@@ -1456,6 +1514,157 @@ HTML_PAGE = r"""<!doctype html>
         `${machineCount.toLocaleString()} machines`,
         `${metadata.total_resource_units.toLocaleString()} resource units`,
       ].join(" | ");
+    }
+
+    function renderBrainStatus() {
+      const hasWorld = Boolean(state.selectedWorldId);
+      playBrainButton.disabled = !hasWorld;
+      pauseBrainButton.disabled = !hasWorld;
+      playBrainButton.classList.toggle("is-active", state.brainRunning);
+      pauseBrainButton.classList.toggle("is-active", hasWorld && !state.brainRunning);
+    }
+
+    function setBrainState(brain) {
+      state.brainIterations = brain?.iterations || 0;
+      state.brainRunning = Boolean(brain?.running);
+      renderBrainStatus();
+      renderWorldSummary();
+
+      if (state.brainRunning) {
+        openBrainStream();
+      } else {
+        closeBrainStream();
+      }
+    }
+
+    function openBrainStream() {
+      if (!state.selectedWorldId) return;
+      if (
+        state.brainStream
+        && state.brainStreamWorldId === state.selectedWorldId
+      ) {
+        return;
+      }
+
+      closeBrainStream();
+      const url = `/api/brain/stream?id=${encodeURIComponent(state.selectedWorldId)}&cacheBust=${Date.now()}`;
+      state.brainStream = new EventSource(url);
+      state.brainStreamWorldId = state.selectedWorldId;
+
+      state.brainStream.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        applyBrainStreamUpdate(data);
+      };
+
+      state.brainStream.onerror = () => {
+        // EventSource will retry automatically. Keep the old frame visible.
+      };
+    }
+
+    function closeBrainStream() {
+      if (state.brainStream) {
+        state.brainStream.close();
+        state.brainStream = null;
+        state.brainStreamWorldId = null;
+      }
+    }
+
+    function applyBrainStreamUpdate(data) {
+      if (data.agent && state.world?.agents?.[data.agent.id]) {
+        state.world.agents[data.agent.id].coordinate = data.agent.coordinate;
+      }
+
+      setBrainState(data.brain);
+      refreshSelectedNodeFromWorld();
+      requestDraw();
+    }
+
+    function refreshSelectedNodeFromWorld() {
+      if (!state.selectedNode || !state.world) return;
+
+      const selected = state.selectedNode;
+      let updated = null;
+      if (selected.type === "agent") {
+        updated = state.world.agents[selected.id] || null;
+      } else if (selected.type === "deposit") {
+        updated = state.world.deposits[selected.id] || null;
+      } else if (selected.type === "machine") {
+        updated = state.world.machines[selected.id] || null;
+      }
+
+      state.selectedNode = updated;
+      setDetails(updated);
+    }
+
+    async function loadBrainState(worldId) {
+      if (!worldId) {
+        setBrainState({ iterations: 0 });
+        return;
+      }
+
+      const data = await apiJson(`/api/brain/state?id=${encodeURIComponent(worldId)}&cacheBust=${Date.now()}`);
+      setBrainState(data.brain);
+      if (data.world) {
+        state.world = data.world;
+        refreshSelectedNodeFromWorld();
+        requestDraw();
+      }
+    }
+
+    async function startBrainLoop() {
+      if (!state.selectedWorldId) return;
+
+      const data = await apiJson("/api/brain/play", {
+        method: "POST",
+        body: JSON.stringify({
+          world_id: state.selectedWorldId,
+          steps_per_tick: state.brainStepsPerTick,
+          interval_ms: state.brainServerIntervalMs,
+        }),
+      });
+
+      state.world = data.world;
+      setBrainState(data.brain);
+      refreshSelectedNodeFromWorld();
+      requestDraw();
+    }
+
+    async function pauseBrainLoop() {
+      if (!state.selectedWorldId) return;
+
+      const data = await apiJson("/api/brain/pause", {
+        method: "POST",
+        body: JSON.stringify({
+          world_id: state.selectedWorldId,
+        }),
+      });
+
+      if (data.world) {
+        state.world = data.world;
+      }
+      setBrainState(data.brain);
+      refreshSelectedNodeFromWorld();
+      requestDraw();
+    }
+
+    async function resetBrainLabWorld() {
+      if (!state.selectedWorldId) return;
+      closeBrainStream();
+
+      const data = await apiJson("/api/brain/reset", {
+        method: "POST",
+        body: JSON.stringify({
+          world_id: state.selectedWorldId,
+          steps: state.brainStepsPerTick,
+        }),
+      });
+
+      state.world = data.world;
+      setBrainState(data.brain);
+      refreshSelectedNodeFromWorld();
+      fitWorldToScreen();
+      hideLoading();
+      requestDraw();
     }
 
     async function apiJson(url, options = {}) {
@@ -1492,6 +1701,7 @@ HTML_PAGE = r"""<!doctype html>
         await loadSelectedWorld(state.selectedWorldId);
       } else {
         state.world = null;
+        setBrainState({ iterations: 0 });
         renderLegend([]);
         renderWorldSummary();
         hideLoading();
@@ -1503,9 +1713,11 @@ HTML_PAGE = r"""<!doctype html>
     }
 
     async function loadSelectedWorld(worldId) {
+      closeBrainStream();
       if (!worldId) {
         state.world = null;
         state.selectedWorldId = null;
+        setBrainState({ iterations: 0 });
         renderLegend([]);
         renderWorldSummary();
         hideLoading();
@@ -1529,6 +1741,7 @@ HTML_PAGE = r"""<!doctype html>
       renderLegend(state.world.metadata.resource_types);
       renderWorldSummary();
       renderWorldList();
+      await loadBrainState(worldId);
       fitWorldToScreen();
       hideLoading();
       requestDraw();
@@ -1655,6 +1868,16 @@ HTML_PAGE = r"""<!doctype html>
 
     createWorldForm.addEventListener("submit", generateWorld);
     seedInput.addEventListener("input", updateWorldNameDefault);
+    playBrainButton.addEventListener("click", () => {
+      startBrainLoop().catch((error) => {
+        showLoading(error.message);
+      });
+    });
+    pauseBrainButton.addEventListener("click", () => {
+      pauseBrainLoop().catch((error) => {
+        showLoading(error.message);
+      });
+    });
     cancelDeleteButton.addEventListener("click", closeDeleteDialog);
     confirmDeleteButton.addEventListener("click", confirmDeleteWorld);
     deleteDialog.addEventListener("click", (event) => {
@@ -1675,12 +1898,15 @@ HTML_PAGE = r"""<!doctype html>
     });
 
     refreshButton.addEventListener("click", () => {
+      closeBrainStream();
       if (!state.selectedWorldId) {
         createPanel.classList.add("open");
         return;
       }
-      loadSelectedWorld(state.selectedWorldId).catch((error) => {
-        showLoading(error.message);
+      resetBrainLabWorld().catch((error) => {
+        loadSelectedWorld(state.selectedWorldId).catch(() => {
+          showLoading(error.message);
+        });
       });
     });
 
@@ -1697,6 +1923,7 @@ HTML_PAGE = r"""<!doctype html>
     canvas.addEventListener("click", handleClick);
     window.addEventListener("resize", resizeCanvas);
 
+    renderBrainStatus();
     resizeCanvas();
     showLoading("Loading saved worlds...");
     loadWorldList().catch((error) => {
@@ -1854,6 +2081,303 @@ def load_world_bytes(index_path, requested_id=None):
         return path.read_bytes()
 
 
+def load_world_object(index_path, requested_id=None):
+    """Load the selected/requested world JSON object and its id."""
+    with INDEX_LOCK:
+        index = load_index(index_path)
+        world_id = selected_or_requested_world_id(index, requested_id)
+        entry = find_world_entry(index, world_id)
+        path = path_for_index(index_path, entry["file_path"])
+        return world_id, validate_world_file(path)
+
+
+class BrainLabRuntime:
+    """In-memory one-agent live brain run for one selected world."""
+
+    def __init__(
+        self,
+        world_id,
+        world,
+        step_size=1,
+        feature_pairs=96,
+        learning_rate=0.03,
+        epsilon=0.15,
+        steps_per_tick=1,
+        loop_interval_seconds=0.01,
+    ):
+        self.world_id = world_id
+        self.world = world
+        self.step_size = step_size
+        self.steps_per_tick = steps_per_tick
+        self.loop_interval_seconds = loop_interval_seconds
+        self.running = False
+        self.runner_thread = None
+        self.env = WorldEnvironment(world)
+        self.rng = random.Random(world["metadata"].get("seed", 1))
+        self.brain = InternalMapBrain.create(
+            metadata=world["metadata"],
+            feature_pairs=feature_pairs,
+            learning_rate=learning_rate,
+            epsilon=epsilon,
+            rng=self.rng,
+        )
+        self.iterations = 0
+        self.unique_coordinates_seen = {coordinate_key(self.env.coordinate)}
+        self.deposit_ids_seen = set()
+        self.last_action = None
+        self.last_prediction_error = None
+        self.last_event = None
+
+        initial_observation = self.env.observe()
+        initial_deposit = initial_observation["cell"]["deposit_id"]
+        if initial_deposit:
+            self.deposit_ids_seen.add(initial_deposit)
+        self.brain.learn(initial_observation)
+
+    def step_once(self):
+        """Advance the brain/world by one movement decision."""
+        before = self.env.coordinate
+        valid_actions = self.env.valid_actions(self.step_size)
+        predictions = self.brain.predict_actions(
+            before,
+            valid_actions,
+            self.step_size,
+        )
+        action = self.brain.choose_action(predictions)
+        predicted = predictions[action]
+
+        self.env.move(action, self.step_size)
+        observation = self.env.observe(last_action=action)
+        error = prediction_error(
+            predicted["predicted_cell"],
+            observation["cell"],
+            self.brain.model.amount_scale,
+        )
+        observation["last_prediction_error"] = error["total"]
+        train_loss = self.brain.learn(observation)
+
+        self.iterations += 1
+        self.unique_coordinates_seen.add(coordinate_key(self.env.coordinate))
+        deposit_id = observation["cell"]["deposit_id"]
+        if deposit_id:
+            self.deposit_ids_seen.add(deposit_id)
+
+        self.last_action = action
+        self.last_prediction_error = error["total"]
+        self.last_event = {
+            "iteration": self.iterations,
+            "from": before,
+            "to": self.env.coordinate,
+            "action": action,
+            "prediction_error": error,
+            "train_loss": train_loss,
+            "observation": observation,
+        }
+
+    def step(self, count):
+        """Advance the runtime count iterations."""
+        for _ in range(count):
+            self.step_once()
+        return self.payload(include_world=True)
+
+    def brain_payload(self):
+        """Return visible brain status for the dashboard."""
+        return {
+            "active": True,
+            "running": self.running,
+            "world_id": self.world_id,
+            "agent_id": self.env.agent_id,
+            "iterations": self.iterations,
+            "coordinate": self.env.coordinate,
+            "step_size": self.step_size,
+            "steps_per_tick": self.steps_per_tick,
+            "loop_interval_ms": round(self.loop_interval_seconds * 1000, 3),
+            "last_action": self.last_action,
+            "last_prediction_error": self.last_prediction_error,
+            "unique_coordinates_seen": len(self.unique_coordinates_seen),
+            "deposits_seen": len(self.deposit_ids_seen),
+            "last_event": self.last_event,
+        }
+
+    def payload(self, include_world=False):
+        """Return dashboard payload."""
+        payload = {"brain": self.brain_payload()}
+        if include_world:
+            payload["world"] = self.world
+        return payload
+
+
+class BrainLabManager:
+    """Manage live in-memory brain runtimes by world id."""
+
+    def __init__(self, index_path):
+        self.index_path = index_path
+        self.lock = threading.RLock()
+        self.runtimes = {}
+
+    def reset(self, world_id=None, options=None):
+        """Create a fresh runtime for a selected world."""
+        options = options or {}
+        with self.lock:
+            selected_world_id, world = load_world_object(self.index_path, world_id)
+            previous_runtime = self.runtimes.get(selected_world_id)
+            if previous_runtime is not None:
+                previous_runtime.running = False
+
+            runtime = BrainLabRuntime(
+                selected_world_id,
+                world,
+                step_size=max(1, int(options.get("step_size", 1))),
+                feature_pairs=max(1, int(options.get("features", 96))),
+                learning_rate=float(options.get("learning_rate", 0.03)),
+                epsilon=float(options.get("epsilon", 0.15)),
+                steps_per_tick=max(
+                    1,
+                    min(
+                        250,
+                        int(options.get("steps_per_tick", options.get("steps", 1))),
+                    ),
+                ),
+                loop_interval_seconds=max(
+                    0.001,
+                    float(options.get("interval_ms", 10)) / 1000.0,
+                ),
+            )
+            self.runtimes[selected_world_id] = runtime
+            return runtime
+
+    def get(self, world_id=None):
+        """Return a runtime if one exists."""
+        selected_world_id, _world = load_world_object(self.index_path, world_id)
+        return self.runtimes.get(selected_world_id)
+
+    def ensure(self, world_id=None, options=None):
+        """Return existing runtime or create one."""
+        with self.lock:
+            selected_world_id, _world = load_world_object(self.index_path, world_id)
+            runtime = self.runtimes.get(selected_world_id)
+            if runtime is None:
+                runtime = self.reset(selected_world_id, options)
+            return runtime
+
+    def state(self, world_id=None):
+        """Return visible lab state without creating a runtime."""
+        with self.lock:
+            selected_world_id, _world = load_world_object(self.index_path, world_id)
+            runtime = self.runtimes.get(selected_world_id)
+            if runtime is None:
+                return {
+                    "brain": {
+                        "active": False,
+                        "running": False,
+                        "world_id": selected_world_id,
+                        "iterations": 0,
+                    }
+                }
+            return runtime.payload(include_world=True)
+
+    def resolve_world_id(self, world_id=None):
+        """Return the concrete selected/requested world id."""
+        selected_world_id, _world = load_world_object(self.index_path, world_id)
+        return selected_world_id
+
+    def stream_state(self, world_id):
+        """Return a small payload for frequent live UI updates."""
+        with self.lock:
+            runtime = self.runtimes.get(world_id)
+            if runtime is None:
+                return {
+                    "brain": {
+                        "active": False,
+                        "running": False,
+                        "world_id": world_id,
+                        "iterations": 0,
+                    }
+                }
+
+            brain = runtime.brain_payload()
+            return {
+                "brain": brain,
+                "agent": {
+                    "id": brain["agent_id"],
+                    "coordinate": brain["coordinate"],
+                },
+            }
+
+    def step(self, world_id=None, steps=1, options=None):
+        """Run several brain iterations and return updated state."""
+        with self.lock:
+            runtime = self.ensure(world_id, options)
+            step_count = max(1, min(250, int(steps)))
+            return runtime.step(step_count)
+
+    def play(self, world_id=None, options=None):
+        """Start the server-side background brain loop."""
+        options = options or {}
+        with self.lock:
+            runtime = self.ensure(world_id, options)
+            runtime.steps_per_tick = max(
+                1,
+                min(
+                    250,
+                    int(options.get("steps_per_tick", runtime.steps_per_tick)),
+                ),
+            )
+            runtime.loop_interval_seconds = max(
+                0.001,
+                float(options.get("interval_ms", runtime.loop_interval_seconds * 1000))
+                / 1000.0,
+            )
+
+            if (
+                runtime.runner_thread is None
+                or not runtime.runner_thread.is_alive()
+            ):
+                runtime.running = True
+                runtime.runner_thread = threading.Thread(
+                    target=self._run_loop,
+                    args=(runtime.world_id,),
+                    daemon=True,
+                )
+                runtime.runner_thread.start()
+            else:
+                runtime.running = True
+
+            return runtime.payload(include_world=True)
+
+    def pause(self, world_id=None):
+        """Pause the server-side background brain loop."""
+        with self.lock:
+            runtime = self.get(world_id)
+            if runtime is None:
+                return self.state(world_id)
+            runtime.running = False
+            return runtime.payload(include_world=True)
+
+    def _run_loop(self, world_id):
+        """Run one runtime until it is paused, reset, deleted, or server exits."""
+        while True:
+            with self.lock:
+                runtime = self.runtimes.get(world_id)
+                if runtime is None or not runtime.running:
+                    return
+
+                step_count = runtime.steps_per_tick
+                sleep_seconds = runtime.loop_interval_seconds
+                for _ in range(step_count):
+                    runtime.step_once()
+
+            time.sleep(sleep_seconds)
+
+    def clear(self, world_id):
+        """Drop one runtime."""
+        with self.lock:
+            runtime = self.runtimes.get(world_id)
+            if runtime is not None:
+                runtime.running = False
+            self.runtimes.pop(world_id, None)
+
+
 def unique_display_name(index, requested_name, seed):
     """Return a display name that does not collide with existing worlds."""
     base_name = requested_name.strip() if requested_name else f"Seed {seed}"
@@ -1995,6 +2519,7 @@ def public_index(index_path):
 
 def make_handler(index_path, worlds_dir):
     """Create a request handler bound to the selected dashboard paths."""
+    brain_lab = BrainLabManager(index_path)
 
     class WorldDashboardHandler(BaseHTTPRequestHandler):
         def send_bytes(self, status, body, content_type):
@@ -2017,6 +2542,30 @@ def make_handler(index_path, worlds_dir):
                 "text/plain; charset=utf-8",
             )
 
+        def send_brain_stream(self, world_id):
+            """Send live brain updates as a Server-Sent Events stream."""
+            try:
+                stream_world_id = brain_lab.resolve_world_id(world_id)
+            except Exception as error:
+                self.send_json(400, {"error": str(error)})
+                return
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+
+            try:
+                while True:
+                    payload = brain_lab.stream_state(stream_world_id)
+                    message = f"data: {json.dumps(payload)}\n\n"
+                    self.wfile.write(message.encode("utf-8"))
+                    self.wfile.flush()
+                    time.sleep(0.05)
+            except (BrokenPipeError, ConnectionResetError):
+                return
+
         def read_json_body(self):
             length = int(self.headers.get("Content-Length", "0"))
             if length <= 0:
@@ -2036,6 +2585,21 @@ def make_handler(index_path, worlds_dir):
 
             if parsed.path == "/api/worlds":
                 self.send_json(200, public_index(index_path))
+                return
+
+            if parsed.path == "/api/brain/state":
+                query = parse_qs(parsed.query)
+                world_id = query.get("id", [None])[0]
+                try:
+                    self.send_json(200, brain_lab.state(world_id))
+                except Exception as error:
+                    self.send_json(400, {"error": str(error)})
+                return
+
+            if parsed.path == "/api/brain/stream":
+                query = parse_qs(parsed.query)
+                world_id = query.get("id", [None])[0]
+                self.send_brain_stream(world_id)
                 return
 
             if parsed.path in {"/api/world", "/world.json"}:
@@ -2072,6 +2636,36 @@ def make_handler(index_path, worlds_dir):
                     self.send_json(200, {"world": entry})
                     return
 
+                if parsed.path == "/api/brain/reset":
+                    runtime = brain_lab.reset(payload.get("world_id"), payload)
+                    self.send_json(200, runtime.payload(include_world=True))
+                    return
+
+                if parsed.path == "/api/brain/play":
+                    self.send_json(
+                        200,
+                        brain_lab.play(payload.get("world_id"), payload),
+                    )
+                    return
+
+                if parsed.path == "/api/brain/pause":
+                    self.send_json(
+                        200,
+                        brain_lab.pause(payload.get("world_id")),
+                    )
+                    return
+
+                if parsed.path == "/api/brain/step":
+                    self.send_json(
+                        200,
+                        brain_lab.step(
+                            payload.get("world_id"),
+                            payload.get("steps", 1),
+                            payload,
+                        ),
+                    )
+                    return
+
                 self.send_text(404, "Not found")
             except Exception as error:
                 self.send_json(400, {"error": str(error)})
@@ -2087,6 +2681,7 @@ def make_handler(index_path, worlds_dir):
                         200,
                         delete_world_from_index(index_path, worlds_dir, world_id),
                     )
+                    brain_lab.clear(world_id)
                     return
 
                 self.send_text(404, "Not found")

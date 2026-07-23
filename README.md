@@ -47,34 +47,33 @@ The benchmark is intended to test whether familiar supply-chain structures can a
 
 ## Current Implementation
 
-The current version is Step 1: world generation and inspection.
+The current version is still an early world and lab layer, not a full economy.
 
 Implemented so far:
 
-- bounded 2D coordinate world
+- bounded 2D circular coordinate world
 - reproducible world generation from random seeds
-- 8,200 agent nodes
-- 10,000 material deposit nodes
-- 10,000,000 total resource units
+- configurable agent and material-deposit generation
 - map-based live-world JSON structure
-- id-keyed agent and deposit maps
+- id-keyed maps for agents, deposits, and machines
 - sparse coordinate index keyed by `"x,y"`
-- empty machines map placeholder
-- dashboard UI for creating, saving, selecting, and inspecting generated worlds
-- pan, zoom, hover, click, legend, and selected-node details in the dashboard
+- dashboard UI for creating, saving, selecting, deleting, and inspecting worlds
+- canvas visualization with pan, zoom, hover, click, legend, and selected-node details
+- experimental one-agent internal-map brain lab with play/pause controls
 
-The world is intentionally not intelligent yet. There is no mining, trade, pricing, production, messaging, route planning, firm formation, or LLM agent behavior.
+The world still has no mining, trade, pricing, production, messaging, route planning, firm formation, or LLM agent behavior.
 
 ## Near-Term Roadmap
 
-The next milestone is the simulation core:
+The next milestone is to turn the current live brain/world lab into a cleaner simulation core:
 
 - world mutation functions
 - event queue
 - simulation clock
-- simple movement events
 - event logs
-- dashboard controls for step/run/pause
+- validated movement events
+- better exploration and observation rules
+- dashboard controls for step, run, pause, and reset
 - live dashboard updates from mutated world state
 
 The immediate goal is to prove that:
@@ -82,8 +81,8 @@ The immediate goal is to prove that:
 1. world state can change safely,
 2. the coordinate index stays correct,
 3. events can be scheduled and processed,
-4. agent movement can happen through time,
-5. the dashboard can show updated state.
+4. agent movement and learning can happen through time,
+5. the dashboard can show updated state without corrupting saved worlds.
 
 Only after that should ESC add mining, machines, messages, trade, production, agent decisions, pricing, and strategy benchmarking.
 
@@ -122,6 +121,16 @@ http://127.0.0.1:8000
 Reusing the same numeric seed intentionally reproduces the same generated world.
 Use a different seed when you want a different generated layout.
 
+For one-agent worlds, the dashboard also includes live play/pause brain controls.
+The brain runs on the local Python server, so it can keep learning after the
+browser tab is closed as long as the server is still running and the Mac is awake.
+
+To keep the Mac awake while the dashboard runs:
+
+```bash
+ESC_KEEP_AWAKE=1 esc-start
+```
+
 Useful local commands:
 
 ```bash
@@ -146,7 +155,7 @@ bin/
   esc-status      check local dashboard status
 
 py/
+  brain.py            run the one-agent internal world-model experiment
   world_generator.py   generate and validate world JSON
   visualize_world.py   serve the dashboard and world-management API
-  README.md            implementation notes for the current Python prototype
 ```
