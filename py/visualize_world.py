@@ -25,6 +25,8 @@ from urllib.parse import parse_qs, urlparse
 from brain import (
     StaticTensorSequenceBrain,
     WorldEnvironment,
+    apply_action,
+    valid_actions_from_coordinate,
 )
 from world_generator import (
     build_world,
@@ -37,6 +39,9 @@ DEFAULT_INDEX_PATH = "worlds_index.json"
 DEFAULT_WORLDS_DIR = "worlds"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
+FORECAST_BATCH_SIZE = 100
+DEFAULT_FORECAST_PASS_PERCENT = 90.0
+MAX_FORECAST_LEVEL = 100
 
 REQUIRED_WORLD_KEYS = {"metadata", "agents", "deposits", "machines", "coordinates"}
 INDEX_LOCK = threading.RLock()
@@ -504,6 +509,98 @@ HTML_PAGE = r"""<!doctype html>
       font-size: 12px;
     }
 
+    .training-level-control {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .level-stepper {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .level-stepper button {
+      display: grid;
+      width: 24px;
+      height: 24px;
+      place-items: center;
+      padding: 0;
+      color: var(--muted);
+      background: #ffffff;
+      border: 1px solid var(--panel-border);
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .level-stepper button:hover:not(:disabled) {
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .level-stepper button:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+    }
+
+    .level-stepper svg {
+      width: 14px;
+      height: 14px;
+      stroke-width: 2.25;
+    }
+
+    .level-value {
+      min-width: 30px;
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+      text-align: center;
+    }
+
+    .training-console-controls {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .console-setting {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .console-setting input {
+      width: 72px;
+      height: 28px;
+      padding: 0 8px;
+      color: var(--text);
+      background: #ffffff;
+      border: 1px solid var(--panel-border);
+      border-radius: 8px;
+      font: inherit;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
+
+    .console-setting input:focus {
+      outline: 2px solid rgba(9, 105, 218, 0.2);
+      border-color: var(--accent);
+    }
+
+    .console-setting input:disabled {
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+
     .training-metrics {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -539,42 +636,48 @@ HTML_PAGE = r"""<!doctype html>
     }
 
     .training-log {
+      flex: 1;
       min-height: 0;
       margin-top: 12px;
       overflow-y: auto;
       border-top: 1px solid var(--panel-border);
       padding-top: 8px;
-    }
-
-    .sequence-row {
-      padding: 8px 0;
-      border-bottom: 1px solid rgba(208, 215, 222, 0.7);
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       font-size: 11px;
-      line-height: 1.35;
+      line-height: 1.45;
     }
 
-    .sequence-row:last-child {
-      border-bottom: 0;
-    }
-
-    .sequence-row-title {
-      display: flex;
-      justify-content: space-between;
-      gap: 8px;
+    .console-heading {
+      margin: 2px 0 5px;
       color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 11px;
       font-weight: 750;
     }
 
-    .sequence-row-meta {
-      margin-top: 4px;
-      color: var(--muted);
+    .console-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 3px 0;
+      border-bottom: 1px solid rgba(208, 215, 222, 0.5);
     }
 
-    .sequence-pass {
+    .console-row:last-child {
+      border-bottom: 0;
+    }
+
+    .console-row .console-value {
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .console-pass {
       color: #1a7f37;
     }
 
-    .sequence-fail {
+    .console-fail {
       color: var(--danger);
     }
 
@@ -1008,6 +1111,24 @@ HTML_PAGE = r"""<!doctype html>
     <div id="trainingIterations" class="training-value">0</div>
     <div class="training-label">iterations</div>
     <div id="trainingStatus" class="training-status">Paused</div>
+    <div class="training-level-control">
+      <span>Forecast level</span>
+      <div class="level-stepper">
+        <button id="decreaseForecastLevel" type="button" aria-label="Decrease forecast level" title="Decrease forecast level">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M5 12h14"></path></svg>
+        </button>
+        <span id="forecastLevelValue" class="level-value">1</span>
+        <button id="increaseForecastLevel" type="button" aria-label="Increase forecast level" title="Increase forecast level">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>
+        </button>
+      </div>
+    </div>
+    <div class="training-console-controls">
+      <label class="console-setting" for="passThresholdInput">
+        <span>Pass threshold</span>
+        <input id="passThresholdInput" type="number" min="0" max="100" step="1" value="90" inputmode="numeric" />
+      </label>
+    </div>
     <div id="trainingMetrics" class="training-metrics"></div>
     <div id="trainingLog" class="training-log"></div>
   </div>
@@ -1062,6 +1183,10 @@ HTML_PAGE = r"""<!doctype html>
     const trainingStatus = document.getElementById("trainingStatus");
     const trainingMetrics = document.getElementById("trainingMetrics");
     const trainingLog = document.getElementById("trainingLog");
+    const decreaseForecastLevelButton = document.getElementById("decreaseForecastLevel");
+    const increaseForecastLevelButton = document.getElementById("increaseForecastLevel");
+    const forecastLevelValue = document.getElementById("forecastLevelValue");
+    const passThresholdInput = document.getElementById("passThresholdInput");
     const resetButton = document.getElementById("reset");
     const refreshButton = document.getElementById("refresh");
     const playBrainButton = document.getElementById("playBrain");
@@ -1113,6 +1238,7 @@ HTML_PAGE = r"""<!doctype html>
       hoverNode: null,
       selectedNode: null,
       pendingDeleteWorldId: null,
+      brainActive: false,
       brainRunning: false,
       brainBusy: false,
       brainStream: null,
@@ -1121,10 +1247,18 @@ HTML_PAGE = r"""<!doctype html>
       trainingTimeMs: 0,
       trainingStartedAt: null,
       trainingTimer: null,
-      sequenceLevel: 1,
-      sequenceAttempts: 0,
-      lastSequence: null,
-      recentSequences: [],
+      forecastLevel: 1,
+      pathTrials: 0,
+      completedBatches: 0,
+      batchSize: 100,
+      batchPathsCompleted: 0,
+      batchStepCorrect: [0],
+      batchStepTotal: [0],
+      lastGrade: null,
+      lastOverallAccuracy: null,
+      lastStepAccuracies: [],
+      passThresholdPercent: 90,
+      targetReached: false,
       brainStepSize: null,
       brainStepsPerTick: 1,
       brainServerIntervalMs: 10,
@@ -1260,25 +1394,48 @@ HTML_PAGE = r"""<!doctype html>
       return baseTime + Math.max(0, Date.now() - state.trainingStartedAt);
     }
 
+    function clampPassThreshold(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return state.passThresholdPercent;
+      return Math.max(0, Math.min(100, Math.round(number * 10) / 10));
+    }
+
+    function syncTrainingInputs() {
+      if (document.activeElement !== passThresholdInput) {
+        passThresholdInput.value = String(state.passThresholdPercent);
+      }
+    }
+
     function renderTrainingInfo() {
-      const last = state.lastSequence;
-      const errorRate = last ? `${Math.round(last.error_rate * 100)}%` : "n/a";
-      const result = last ? (last.passed ? "passed" : "failed") : "waiting";
-      const wrong = last ? `${last.wrong_count}/${last.completed_length}` : "n/a";
       const stepSize = state.brainStepSize
         ? state.brainStepSize.toLocaleString()
         : defaultBrainStepSize().toLocaleString();
+      const hasGrade = Number.isFinite(state.lastGrade);
+      const grade = hasGrade ? `${state.lastGrade.toFixed(1)}%` : "n/a";
+      const overall = Number.isFinite(state.lastOverallAccuracy)
+        ? `${state.lastOverallAccuracy.toFixed(1)}%`
+        : "n/a";
+      const liveStepAccuracies = state.batchStepTotal.map((total, index) => {
+        const correct = state.batchStepCorrect[index] || 0;
+        return total ? (correct / total) * 100 : null;
+      });
 
       trainingIterations.textContent = state.brainIterations.toLocaleString();
-      trainingStatus.textContent = state.brainRunning ? "Running" : "Paused";
+      forecastLevelValue.textContent = state.forecastLevel.toLocaleString();
+      syncTrainingInputs();
+      trainingStatus.textContent = state.targetReached
+        ? "Target reached: training stopped"
+        : state.brainRunning
+          ? "Running 100-path forecast batches"
+          : "Paused";
       trainingMetrics.innerHTML = [
-        ["level", state.sequenceLevel.toLocaleString()],
-        ["attempts", state.sequenceAttempts.toLocaleString()],
-        ["last result", result],
-        ["wrong", wrong],
-        ["error rate", errorRate],
+        ["batch", `${state.batchPathsCompleted}/${state.batchSize}`],
+        ["last grade", grade],
+        ["overall", overall],
+        ["threshold", `${state.passThresholdPercent}% / step`],
+        ["paths", state.pathTrials.toLocaleString()],
+        ["batches", state.completedBatches.toLocaleString()],
         ["step size", stepSize],
-        ["update strength", last ? Number(last.future_update_strength).toFixed(2) : "n/a"],
       ]
         .map(([label, value]) => `<div class="metric-cell">
           <span class="metric-label">${escapeHtml(label)}</span>
@@ -1286,34 +1443,28 @@ HTML_PAGE = r"""<!doctype html>
         </div>`)
         .join("");
 
-      if (!state.recentSequences.length) {
-        trainingLog.innerHTML = `<div class="sequence-row">
-          <div class="sequence-row-meta">No completed sequences yet.</div>
+      const completedRows = state.lastStepAccuracies.map((accuracy, index) => {
+        const passed = accuracy >= state.passThresholdPercent;
+        return `<div class="console-row">
+          <span>last step ${String(index + 1).padStart(2, "0")}</span>
+          <span class="console-value ${passed ? "console-pass" : "console-fail"}">${accuracy.toFixed(1)}%</span>
         </div>`;
-        layoutRightPanels();
-        return;
-      }
+      }).join("");
+      const liveRows = liveStepAccuracies.map((accuracy, index) => {
+        const correct = state.batchStepCorrect[index] || 0;
+        const total = state.batchStepTotal[index] || 0;
+        const display = accuracy === null ? "waiting" : `${correct}/${total} · ${accuracy.toFixed(1)}%`;
+        return `<div class="console-row">
+          <span>current step ${String(index + 1).padStart(2, "0")}</span>
+          <span class="console-value">${display}</span>
+        </div>`;
+      }).join("");
 
-      trainingLog.innerHTML = state.recentSequences
-        .slice(0, 24)
-        .map((sequence) => {
-          const statusClass = sequence.passed ? "sequence-pass" : "sequence-fail";
-          const statusText = sequence.passed ? "pass" : "fail";
-          const actions = sequence.action_codes?.join(", ") || "";
-          return `<div class="sequence-row">
-            <div class="sequence-row-title">
-              <span>#${escapeHtml(sequence.attempt)}</span>
-              <span class="${statusClass}">${statusText}</span>
-            </div>
-            <div class="sequence-row-meta">
-              len ${escapeHtml(sequence.completed_length)}/${escapeHtml(sequence.requested_length)}
-              · wrong ${escapeHtml(sequence.wrong_count)}
-              · error ${escapeHtml(Math.round(sequence.error_rate * 100))}%
-            </div>
-            <div class="sequence-row-meta">codes [${escapeHtml(actions)}]</div>
-          </div>`;
-        })
-        .join("");
+      trainingLog.innerHTML = [
+        hasGrade ? `<div class="console-heading">Last completed batch</div>${completedRows}` : "",
+        `<div class="console-heading">Current batch</div>${liveRows}`,
+        `<div class="console-row"><span>rule</span><span class="console-value">each step >= ${state.passThresholdPercent}%</span></div>`,
+      ].join("");
       layoutRightPanels();
     }
 
@@ -1806,11 +1957,15 @@ HTML_PAGE = r"""<!doctype html>
       const hasWorld = Boolean(state.selectedWorldId);
       playBrainButton.disabled = !hasWorld;
       pauseBrainButton.disabled = !hasWorld;
+      decreaseForecastLevelButton.disabled = !hasWorld || state.brainRunning || state.forecastLevel <= 1;
+      increaseForecastLevelButton.disabled = !hasWorld || state.brainRunning;
+      passThresholdInput.disabled = !hasWorld;
       playBrainButton.classList.toggle("is-active", state.brainRunning);
       pauseBrainButton.classList.toggle("is-active", hasWorld && !state.brainRunning);
     }
 
     function setBrainState(brain) {
+      state.brainActive = Boolean(brain?.active);
       state.brainIterations = brain?.iterations || 0;
       if (Number.isFinite(Number(brain?.training_time_ms))) {
         state.trainingTimeMs = Math.max(0, Math.floor(Number(brain.training_time_ms)));
@@ -1827,18 +1982,42 @@ HTML_PAGE = r"""<!doctype html>
       }
       state.brainRunning = Boolean(brain?.running);
       state.trainingStartedAt = state.brainRunning ? Date.now() : null;
-      state.sequenceLevel = Math.max(1, Math.floor(Number(brain?.sequence_level) || 1));
-      state.sequenceAttempts = Math.max(
+      state.forecastLevel = Math.max(1, Math.floor(Number(brain?.forecast_level) || 1));
+      state.pathTrials = Math.max(
         0,
-        Math.floor(Number(brain?.sequence_attempts) || 0),
+        Math.floor(Number(brain?.path_trials) || 0),
       );
+      state.completedBatches = Math.max(
+        0,
+        Math.floor(Number(brain?.completed_batches) || 0),
+      );
+      state.batchSize = Math.max(1, Math.floor(Number(brain?.batch_size) || 100));
+      state.batchPathsCompleted = Math.max(
+        0,
+        Math.floor(Number(brain?.batch_paths_completed) || 0),
+      );
+      state.batchStepCorrect = Array.isArray(brain?.batch_step_correct)
+        ? brain.batch_step_correct
+        : [0];
+      state.batchStepTotal = Array.isArray(brain?.batch_step_total)
+        ? brain.batch_step_total
+        : [0];
+      state.lastGrade = Number.isFinite(Number(brain?.last_grade))
+        ? Number(brain.last_grade)
+        : null;
+      state.lastOverallAccuracy = Number.isFinite(Number(brain?.last_overall_accuracy))
+        ? Number(brain.last_overall_accuracy)
+        : null;
+      state.lastStepAccuracies = Array.isArray(brain?.last_step_accuracies)
+        ? brain.last_step_accuracies
+        : [];
+      state.passThresholdPercent = Number.isFinite(Number(brain?.pass_threshold_percent))
+        ? Number(brain.pass_threshold_percent)
+        : 90;
+      state.targetReached = Boolean(brain?.target_reached);
       if (Number.isFinite(Number(brain?.step_size))) {
         state.brainStepSize = Math.max(1, Math.floor(Number(brain.step_size)));
       }
-      state.lastSequence = brain?.last_sequence || null;
-      state.recentSequences = Array.isArray(brain?.recent_sequences)
-        ? brain.recent_sequences
-        : [];
       renderBrainStatus();
       renderWorldSummary();
       renderTrainingInfo();
@@ -1936,6 +2115,7 @@ HTML_PAGE = r"""<!doctype html>
           step_size: state.brainStepSize || defaultBrainStepSize(),
           steps_per_tick: state.brainStepsPerTick,
           interval_ms: state.brainServerIntervalMs,
+          pass_threshold_percent: state.passThresholdPercent,
         }),
       });
 
@@ -1973,6 +2153,7 @@ HTML_PAGE = r"""<!doctype html>
           world_id: state.selectedWorldId,
           step_size: state.brainStepSize || defaultBrainStepSize(),
           steps: state.brainStepsPerTick,
+          pass_threshold_percent: state.passThresholdPercent,
         }),
       });
 
@@ -1981,6 +2162,58 @@ HTML_PAGE = r"""<!doctype html>
       refreshSelectedNodeFromWorld();
       fitWorldToScreen();
       hideLoading();
+      requestDraw();
+    }
+
+    async function changeForecastLevel(delta) {
+      if (!state.selectedWorldId || state.brainRunning) return;
+
+      const nextLevel = Math.max(1, state.forecastLevel + delta);
+      const data = await apiJson("/api/brain/level", {
+        method: "POST",
+        body: JSON.stringify({
+          world_id: state.selectedWorldId,
+          forecast_level: nextLevel,
+          step_size: state.brainStepSize || defaultBrainStepSize(),
+          steps_per_tick: state.brainStepsPerTick,
+          interval_ms: state.brainServerIntervalMs,
+          pass_threshold_percent: state.passThresholdPercent,
+        }),
+      });
+
+      if (data.world) {
+        state.world = data.world;
+      }
+      setBrainState(data.brain);
+      refreshSelectedNodeFromWorld();
+      requestDraw();
+    }
+
+    async function updateBrainSettings() {
+      if (!state.selectedWorldId) return;
+      if (!state.brainActive) {
+        renderBrainStatus();
+        renderWorldSummary();
+        renderTrainingInfo();
+        return;
+      }
+
+      const data = await apiJson("/api/brain/settings", {
+        method: "POST",
+        body: JSON.stringify({
+          world_id: state.selectedWorldId,
+          step_size: state.brainStepSize || defaultBrainStepSize(),
+          steps_per_tick: state.brainStepsPerTick,
+          interval_ms: state.brainServerIntervalMs,
+          pass_threshold_percent: state.passThresholdPercent,
+        }),
+      });
+
+      if (data.world) {
+        state.world = data.world;
+      }
+      setBrainState(data.brain);
+      refreshSelectedNodeFromWorld();
       requestDraw();
     }
 
@@ -2193,6 +2426,27 @@ HTML_PAGE = r"""<!doctype html>
     });
     pauseBrainButton.addEventListener("click", () => {
       pauseBrainLoop().catch((error) => {
+        showLoading(error.message);
+      });
+    });
+    decreaseForecastLevelButton.addEventListener("click", () => {
+      changeForecastLevel(-1).catch((error) => {
+        showLoading(error.message);
+      });
+    });
+    increaseForecastLevelButton.addEventListener("click", () => {
+      changeForecastLevel(1).catch((error) => {
+        showLoading(error.message);
+      });
+    });
+    passThresholdInput.addEventListener("input", () => {
+      state.passThresholdPercent = clampPassThreshold(passThresholdInput.value);
+      renderTrainingInfo();
+    });
+    passThresholdInput.addEventListener("change", () => {
+      state.passThresholdPercent = clampPassThreshold(passThresholdInput.value);
+      syncTrainingInputs();
+      updateBrainSettings().catch((error) => {
         showLoading(error.message);
       });
     });
@@ -2435,6 +2689,19 @@ def load_world_object(index_path, requested_id=None):
         return world_id, validate_world_file(path)
 
 
+def clamp_percent(value, default=DEFAULT_FORECAST_PASS_PERCENT):
+    """Return a dashboard percentage setting constrained to 0 through 100."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = default
+
+    if number != number:
+        number = default
+
+    return max(0.0, min(100.0, number))
+
+
 class BrainLabRuntime:
     """In-memory one-agent live brain run for one selected world."""
 
@@ -2449,12 +2716,14 @@ class BrainLabRuntime:
         steps_per_tick=1,
         loop_interval_seconds=0.01,
         training_time_ms=0,
+        pass_threshold_percent=DEFAULT_FORECAST_PASS_PERCENT,
     ):
         self.world_id = world_id
         self.world = world
         self.step_size = step_size
         self.steps_per_tick = steps_per_tick
         self.loop_interval_seconds = loop_interval_seconds
+        self.pass_threshold_percent = clamp_percent(pass_threshold_percent)
         self.running = False
         self.runner_thread = None
         self.training_time_ms = max(0, int(training_time_ms))
@@ -2463,15 +2732,22 @@ class BrainLabRuntime:
         self.rng = random.Random(world["metadata"].get("seed", 1))
         self.brain = StaticTensorSequenceBrain()
         self.iterations = 0
-        self.sequence_level = 1
-        self.sequence_attempts = 0
+        self.forecast_level = 1
+        self.path_trials = 0
+        self.completed_batches = 0
+        self.batch_paths_completed = 0
+        self.batch_step_correct = [0]
+        self.batch_step_total = [0]
+        self.batch_path_keys = set()
+        self.last_grade = None
+        self.last_overall_accuracy = None
+        self.last_step_accuracies = []
+        self.target_reached = False
         self.unique_coordinates_seen = {coordinate_key(self.env.coordinate)}
         self.deposit_ids_seen = set()
         self.last_action = None
         self.last_prediction_error = None
         self.last_event = None
-        self.last_sequence = None
-        self.recent_sequences = []
 
         initial_observation = self.env.observe()
         initial_deposit = initial_observation["cell"]["deposit_id"]
@@ -2501,35 +2777,145 @@ class BrainLabRuntime:
         self.training_started_at = None
         return elapsed_ms
 
-    def step_once(self):
-        """Run one full forced random sequence attempt."""
-        requested_length = self.sequence_level
-        sequence_state = self.brain.initial_state()
-        steps = []
-        wrong_count = 0
+    def set_forecast_level(self, level):
+        """Select a path horizon and discard only its in-progress batch."""
+        if self.running:
+            raise RuntimeError("Pause training before changing the forecast level.")
 
-        for step_number in range(1, requested_length + 1):
-            valid_actions = self.env.valid_actions(self.step_size)
-            if not valid_actions:
-                break
+        self.forecast_level = max(1, min(MAX_FORECAST_LEVEL, int(level)))
+        self._start_new_batch(clear_grade=True)
 
-            before = self.env.coordinate
-            action = self.rng.choice(valid_actions)
-            prediction = self.brain.predict_surface(
-                sequence_state,
-                action,
-                step_number,
+    def _start_new_batch(self, clear_grade=False):
+        """Prepare 100 fresh path trials without resetting the agent or brain."""
+        self.batch_paths_completed = 0
+        self.batch_step_correct = [0] * self.forecast_level
+        self.batch_step_total = [0] * self.forecast_level
+        self.batch_path_keys = set()
+        self.target_reached = False
+        if clear_grade:
+            self.last_grade = None
+            self.last_overall_accuracy = None
+            self.last_step_accuracies = []
+
+    def apply_settings(self, options=None):
+        """Update live-tunable runtime settings without resetting the world."""
+        options = options or {}
+
+        if "step_size" in options:
+            self.step_size = max(1, int(options["step_size"]))
+        if "steps_per_tick" in options or "steps" in options:
+            self.steps_per_tick = max(
+                1,
+                min(
+                    250,
+                    int(options.get("steps_per_tick", options.get("steps", 1))),
+                ),
             )
-            sequence_state = prediction["next_state"]
+        if "interval_ms" in options:
+            self.loop_interval_seconds = max(
+                0.001,
+                float(options["interval_ms"]) / 1000.0,
+            )
+        if "pass_threshold_percent" in options:
+            self.pass_threshold_percent = clamp_percent(
+                options["pass_threshold_percent"],
+                self.pass_threshold_percent,
+            )
+            if self.last_step_accuracies:
+                self.target_reached = all(
+                    accuracy >= self.pass_threshold_percent
+                    for accuracy in self.last_step_accuracies
+                )
 
+    def _generate_actions(self):
+        """Create one complete legal path before any movement is executed.
+
+        Levels below four have fewer than 100 possible action vectors, so the
+        runtime permits repeated vectors there. They are still separate trials
+        because the agent reaches them from different physical coordinates.
+        """
+        can_require_unique_paths = 4**self.forecast_level >= FORECAST_BATCH_SIZE
+
+        for _ in range(32):
+            cursor = self.env.coordinate
+            actions = []
+            for _step in range(self.forecast_level):
+                valid_actions = valid_actions_from_coordinate(
+                    cursor,
+                    self.env.metadata,
+                    self.step_size,
+                )
+                if not valid_actions:
+                    break
+                action = self.rng.choice(valid_actions)
+                actions.append(action)
+                cursor = apply_action(cursor, action, self.step_size)
+
+            if len(actions) != self.forecast_level:
+                raise RuntimeError("Could not create a complete legal forecast path.")
+
+            path_key = tuple(actions)
+            if not can_require_unique_paths or path_key not in self.batch_path_keys:
+                self.batch_path_keys.add(path_key)
+                return actions
+
+        # A path is always usable even if random retries happened to collide.
+        self.batch_path_keys.add(tuple(actions))
+        return actions
+
+    def _finish_batch_if_ready(self):
+        """Grade a completed 100-path batch and retain only its summary."""
+        if self.batch_paths_completed < FORECAST_BATCH_SIZE:
+            return False
+
+        step_accuracies = [
+            (correct / total) * 100 if total else 0.0
+            for correct, total in zip(self.batch_step_correct, self.batch_step_total)
+        ]
+        total_correct = sum(self.batch_step_correct)
+        total_predictions = sum(self.batch_step_total)
+
+        self.last_step_accuracies = step_accuracies
+        self.last_overall_accuracy = (
+            (total_correct / total_predictions) * 100 if total_predictions else 0.0
+        )
+        # The grade is the weakest position in the path. Passing therefore
+        # means every step position, not only an average, reached the target.
+        self.last_grade = min(step_accuracies, default=0.0)
+        self.completed_batches += 1
+        self.target_reached = all(
+            accuracy >= self.pass_threshold_percent for accuracy in step_accuracies
+        )
+
+        if self.target_reached:
+            # The background manager notices this and persists elapsed time.
+            self.running = False
+        else:
+            self._start_new_batch(clear_grade=False)
+
+        return self.target_reached
+
+    def step_once(self):
+        """Forecast and execute one full blind path trial at the chosen level."""
+        actions = self._generate_actions()
+        # All guesses are prepared before movement reveals even the first cell.
+        predictions = self.brain.predict_path(actions)
+
+        for step_number, (action, prediction) in enumerate(
+            zip(actions, predictions),
+            start=1,
+        ):
+            before = self.env.coordinate
             self.env.move(action, self.step_size)
             observation = self.env.observe(last_action=action)
             actual_surface = observation["cell"]["surface_code"]
             correct = prediction["predicted_surface"] == actual_surface
-            if not correct:
-                wrong_count += 1
 
             self.iterations += 1
+            self.batch_step_total[step_number - 1] += 1
+            if correct:
+                self.batch_step_correct[step_number - 1] += 1
+
             self.unique_coordinates_seen.add(coordinate_key(self.env.coordinate))
             deposit_id = observation["cell"]["deposit_id"]
             if deposit_id:
@@ -2548,42 +2934,14 @@ class BrainLabRuntime:
                 "brain_number": prediction["brain_number"],
                 "state_size_before": prediction["state_size_before"],
                 "state_size_after": prediction["state_size_after"],
-                "generated_preview": prediction["generated_preview"],
             }
-            steps.append(step_record)
             self.last_action = action
             self.last_prediction_error = 0.0 if correct else 1.0
             self.last_event = step_record
 
-        completed_length = len(steps)
-        correct_count = completed_length - wrong_count
-        error_rate = wrong_count / completed_length if completed_length else 1.0
-        passed = completed_length == requested_length and wrong_count == 0
-        previous_level = self.sequence_level
-
-        if passed:
-            self.sequence_level += 1
-        else:
-            self.sequence_level = 1
-
-        self.sequence_attempts += 1
-        self.last_sequence = {
-            "attempt": self.sequence_attempts,
-            "requested_length": requested_length,
-            "completed_length": completed_length,
-            "previous_level": previous_level,
-            "next_level": self.sequence_level,
-            "passed": passed,
-            "correct_count": correct_count,
-            "wrong_count": wrong_count,
-            "error_rate": error_rate,
-            "future_update_strength": error_rate,
-            "actions": [step["action"] for step in steps],
-            "action_codes": [step["action_code"] for step in steps],
-            "steps": steps,
-        }
-        self.recent_sequences.insert(0, self.last_sequence)
-        self.recent_sequences = self.recent_sequences[:40]
+        self.path_trials += 1
+        self.batch_paths_completed += 1
+        return self._finish_batch_if_ready()
 
     def step(self, count):
         """Advance the runtime count iterations."""
@@ -2600,8 +2958,18 @@ class BrainLabRuntime:
             "agent_id": self.env.agent_id,
             "iterations": self.iterations,
             "training_time_ms": self.current_training_time_ms(),
-            "sequence_level": self.sequence_level,
-            "sequence_attempts": self.sequence_attempts,
+            "forecast_level": self.forecast_level,
+            "path_trials": self.path_trials,
+            "completed_batches": self.completed_batches,
+            "batch_size": FORECAST_BATCH_SIZE,
+            "batch_paths_completed": self.batch_paths_completed,
+            "batch_step_correct": self.batch_step_correct,
+            "batch_step_total": self.batch_step_total,
+            "last_grade": self.last_grade,
+            "last_overall_accuracy": self.last_overall_accuracy,
+            "last_step_accuracies": self.last_step_accuracies,
+            "pass_threshold_percent": self.pass_threshold_percent,
+            "target_reached": self.target_reached,
             "coordinate": self.env.coordinate,
             "step_size": self.step_size,
             "steps_per_tick": self.steps_per_tick,
@@ -2611,8 +2979,6 @@ class BrainLabRuntime:
             "unique_coordinates_seen": len(self.unique_coordinates_seen),
             "deposits_seen": len(self.deposit_ids_seen),
             "last_event": self.last_event,
-            "last_sequence": self.last_sequence,
-            "recent_sequences": self.recent_sequences,
         }
 
     def payload(self, include_world=False):
@@ -2621,6 +2987,29 @@ class BrainLabRuntime:
         if include_world:
             payload["world"] = self.world
         return payload
+
+
+def inactive_brain_payload(world_id, training_time_ms):
+    """Return dashboard defaults before a runtime has been created."""
+    return {
+        "active": False,
+        "running": False,
+        "world_id": world_id,
+        "iterations": 0,
+        "training_time_ms": training_time_ms,
+        "forecast_level": 1,
+        "path_trials": 0,
+        "completed_batches": 0,
+        "batch_size": FORECAST_BATCH_SIZE,
+        "batch_paths_completed": 0,
+        "batch_step_correct": [0],
+        "batch_step_total": [0],
+        "last_grade": None,
+        "last_overall_accuracy": None,
+        "last_step_accuracies": [],
+        "pass_threshold_percent": DEFAULT_FORECAST_PASS_PERCENT,
+        "target_reached": False,
+    }
 
 
 class BrainLabManager:
@@ -2669,6 +3058,10 @@ class BrainLabManager:
                     self.index_path,
                     selected_world_id,
                 ),
+                pass_threshold_percent=options.get(
+                    "pass_threshold_percent",
+                    DEFAULT_FORECAST_PASS_PERCENT,
+                ),
             )
             self.runtimes[selected_world_id] = runtime
             return runtime
@@ -2693,22 +3086,10 @@ class BrainLabManager:
             selected_world_id, _world = load_world_object(self.index_path, world_id)
             runtime = self.runtimes.get(selected_world_id)
             if runtime is None:
-                return {
-                    "brain": {
-                        "active": False,
-                        "running": False,
-                        "world_id": selected_world_id,
-                        "iterations": 0,
-                        "training_time_ms": world_training_time_ms(
-                            self.index_path,
-                            selected_world_id,
-                        ),
-                        "sequence_level": 1,
-                        "sequence_attempts": 0,
-                        "last_sequence": None,
-                        "recent_sequences": [],
-                    }
-                }
+                return {"brain": inactive_brain_payload(
+                    selected_world_id,
+                    world_training_time_ms(self.index_path, selected_world_id),
+                )}
             return runtime.payload(include_world=True)
 
     def resolve_world_id(self, world_id=None):
@@ -2721,22 +3102,10 @@ class BrainLabManager:
         with self.lock:
             runtime = self.runtimes.get(world_id)
             if runtime is None:
-                return {
-                    "brain": {
-                        "active": False,
-                        "running": False,
-                        "world_id": world_id,
-                        "iterations": 0,
-                        "training_time_ms": world_training_time_ms(
-                            self.index_path,
-                            world_id,
-                        ),
-                        "sequence_level": 1,
-                        "sequence_attempts": 0,
-                        "last_sequence": None,
-                        "recent_sequences": [],
-                    }
-                }
+                return {"brain": inactive_brain_payload(
+                    world_id,
+                    world_training_time_ms(self.index_path, world_id),
+                )}
 
             brain = runtime.brain_payload()
             return {
@@ -2754,23 +3123,20 @@ class BrainLabManager:
             step_count = max(1, min(250, int(steps)))
             return runtime.step(step_count)
 
+    def set_forecast_level(self, world_id=None, level=1, options=None):
+        """Set the selected path horizon while the runtime is paused."""
+        with self.lock:
+            runtime = self.ensure(world_id, options)
+            runtime.set_forecast_level(level)
+            runtime.apply_settings(options)
+            return runtime.payload(include_world=True)
+
     def play(self, world_id=None, options=None):
         """Start the server-side background brain loop."""
         options = options or {}
         with self.lock:
             runtime = self.ensure(world_id, options)
-            runtime.steps_per_tick = max(
-                1,
-                min(
-                    250,
-                    int(options.get("steps_per_tick", runtime.steps_per_tick)),
-                ),
-            )
-            runtime.loop_interval_seconds = max(
-                0.001,
-                float(options.get("interval_ms", runtime.loop_interval_seconds * 1000))
-                / 1000.0,
-            )
+            runtime.apply_settings(options)
 
             runtime.start_training_timer()
             runtime.running = True
@@ -2804,6 +3170,15 @@ class BrainLabManager:
             runtime.running = False
             return runtime.payload(include_world=True)
 
+    def update_settings(self, world_id=None, options=None):
+        """Update live console settings without starting or resetting training."""
+        with self.lock:
+            runtime = self.get(world_id)
+            if runtime is None:
+                return self.state(world_id)
+            runtime.apply_settings(options)
+            return runtime.payload(include_world=True)
+
     def _run_loop(self, world_id):
         """Run one runtime until it is paused, reset, deleted, or server exits."""
         while True:
@@ -2816,6 +3191,15 @@ class BrainLabManager:
                 sleep_seconds = runtime.loop_interval_seconds
                 for _ in range(step_count):
                     runtime.step_once()
+                    if not runtime.running:
+                        elapsed_ms = runtime.pause_training_timer()
+                        if elapsed_ms:
+                            runtime.training_time_ms = add_world_training_time_ms(
+                                self.index_path,
+                                runtime.world_id,
+                                elapsed_ms,
+                            )
+                        return
 
             time.sleep(sleep_seconds)
 
@@ -3106,12 +3490,33 @@ def make_handler(index_path, worlds_dir):
                     )
                     return
 
+                if parsed.path == "/api/brain/settings":
+                    self.send_json(
+                        200,
+                        brain_lab.update_settings(
+                            payload.get("world_id"),
+                            payload,
+                        ),
+                    )
+                    return
+
                 if parsed.path == "/api/brain/step":
                     self.send_json(
                         200,
                         brain_lab.step(
                             payload.get("world_id"),
                             payload.get("steps", 1),
+                            payload,
+                        ),
+                    )
+                    return
+
+                if parsed.path == "/api/brain/level":
+                    self.send_json(
+                        200,
+                        brain_lab.set_forecast_level(
+                            payload.get("world_id"),
+                            payload.get("forecast_level", 1),
                             payload,
                         ),
                     )

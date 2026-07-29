@@ -78,15 +78,16 @@ Implemented so far:
 - sparse coordinate index keyed by `"x,y"`
 - dashboard UI for creating, saving, selecting, deleting, and inspecting worlds
 - canvas visualization with pan, zoom, hover, click, legend, and selected-node details
-- experimental one-agent brain lab with forced random movement sequences
-- static surface-code prediction shell that logs right/wrong sequence outcomes
+- experimental one-agent brain lab with blind random path forecasts
+- static surface-code prediction shell that predicts every step of a path before movement reveals any answer
+- fixed 100-path grading batches with selectable forecast horizon and pass-threshold controls
 - cumulative per-world training-time tracking in `worlds_index.json`
 
 The world still has no mining, trade, pricing, production, messaging, route planning, firm formation, or LLM agent behavior.
 
 ## Near-Term Roadmap
 
-The next milestone is to turn the current live brain/world lab into a cleaner simulation core:
+The next milestone is to turn the current static brain/world lab into a learning simulation core:
 
 - world mutation functions
 - event queue
@@ -145,10 +146,20 @@ The generated JSON stores occupied entities only; blank-coordinate surface value
 are recomputed from the math function instead of being saved for every point.
 
 For one-agent worlds, the dashboard also includes live play/pause brain controls.
-The brain runs on the local Python server, so it can keep learning after the
-browser tab is closed as long as the server is still running and the Mac is awake.
+The current frozen baseline runs on the local Python server, so it can continue
+forecasting after the browser tab is closed as long as the server is still
+running and the Mac is awake.
 When the brain is paused, the dashboard saves cumulative elapsed training time
 for that world in `worlds_index.json`.
+
+The Training Info panel works like the current-run console. It lets you select
+a forecast level, adjust the per-step pass threshold, and inspect the current
+batch plus the most recent completed batch. Each batch contains 100 blind paths.
+The dashboard records a grade only after the full batch completes; the grade is
+the lowest per-step accuracy, so every step position must reach the selected
+threshold before the batch succeeds and training stops. The predictor is
+deliberately frozen for now, so it will not improve until weight-update rules
+are designed and implemented.
 
 To keep the Mac awake while the dashboard runs:
 

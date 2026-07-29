@@ -85,7 +85,7 @@ class StaticTensorSequenceBrain:
         self.max_state_values = max_state_values
 
     def initial_state(self):
-        """Return the starting vector for one sequence attempt."""
+        """Return the temporary starting vector for one blind path forecast."""
         return list(self.base_vector)
 
     def predict_surface(self, sequence_state, action, step_number):
@@ -117,6 +117,27 @@ class StaticTensorSequenceBrain:
             "generated_preview": generated_values[:8],
             "next_state": next_state,
         }
+
+    def predict_path(self, actions):
+        """Forecast every step in a complete action path before it is executed.
+
+        This is still a static placeholder, not the final tensor-learning model.
+        It exists so the runtime can give the brain a whole path vector, collect
+        all forecasts first, and only then let the world reveal the answers.
+        """
+        sequence_state = self.initial_state()
+        predictions = []
+
+        for step_number, action in enumerate(actions, start=1):
+            prediction = self.predict_surface(
+                sequence_state,
+                action,
+                step_number,
+            )
+            sequence_state = prediction["next_state"]
+            predictions.append(prediction)
+
+        return predictions
 
 
 def clamp(value, low, high):
