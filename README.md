@@ -8,7 +8,25 @@ The project is not meant to hardcode a supply chain. It is meant to define the m
 
 Can agents placed in a shared world with finite resources, distance, production constraints, limited information, and asynchronous communication naturally produce recognizable supply-chain behavior without manually defining suppliers, manufacturers, firms, markets, or bullwhip effects?
 
-The long-term goal is to create a synthetic benchmark environment for autonomous supply-chain and agentic commerce research, especially because real supply-chain data is often private, commercially sensitive, fragmented, or unavailable.
+The long-term goal is to create a synthetic benchmark environment for autonomous supply-chain and agentic commerce research.
+
+## Core Hypothesis
+
+Supply-chain decisions depend on more than knowing where things are. They depend on the physical consequences of action: distance, time, reachability, delay, scarcity, congestion, bottlenecks, and downstream effects.
+
+ESC starts with a simple 2D world because it is a controlled place to test whether an agent can learn spatial and action physics from experience:
+
+```text
+state + action -> consequence
+```
+
+The hypothesis is that if a model can learn useful decision-making behavior in a 2D world, then richer versions of the same idea may help agents reason about real-world geography and logistics. The possible advantage is not better map lookup. It is better action intuition: understanding routes, costs, delays, constraints, and bottlenecks as things experienced through movement and interaction.
+
+## Synthetic Data Motivation
+
+Real supply-chain data is often private, commercially sensitive, fragmented, stale, or unavailable. ESC is meant to generate synthetic but structured data from objective primitives and event logs instead of relying on proprietary company data.
+
+The benchmark should eventually produce records such as movements, observations, production events, messages, trades, inventories, shortages, and delivery delays. Higher-level structures like suppliers, manufacturers, hubs, bottlenecks, and bullwhip-like effects should then be measured from those records after the fact, not manually assigned in advance.
 
 ## Design Philosophy
 
@@ -53,13 +71,16 @@ Implemented so far:
 
 - bounded 2D circular coordinate world
 - reproducible world generation from random seeds
-- configurable agent and material-deposit generation
+- configurable agent and material-deposit generation from base world width and height
+- deterministic 0-9 surface-code function computed from seed, coordinate, and chaos level
 - map-based live-world JSON structure
 - id-keyed maps for agents, deposits, and machines
 - sparse coordinate index keyed by `"x,y"`
 - dashboard UI for creating, saving, selecting, deleting, and inspecting worlds
 - canvas visualization with pan, zoom, hover, click, legend, and selected-node details
-- experimental one-agent internal-map brain lab with play/pause controls
+- experimental one-agent brain lab with forced random movement sequences
+- static surface-code prediction shell that logs right/wrong sequence outcomes
+- cumulative per-world training-time tracking in `worlds_index.json`
 
 The world still has no mining, trade, pricing, production, messaging, route planning, firm formation, or LLM agent behavior.
 
@@ -72,7 +93,7 @@ The next milestone is to turn the current live brain/world lab into a cleaner si
 - simulation clock
 - event logs
 - validated movement events
-- better exploration and observation rules
+- weight-update rules for correcting wrong surface predictions
 - dashboard controls for step, run, pause, and reset
 - live dashboard updates from mutated world state
 
@@ -120,10 +141,14 @@ http://127.0.0.1:8000
 
 Reusing the same numeric seed intentionally reproduces the same generated world.
 Use a different seed when you want a different generated layout.
+The generated JSON stores occupied entities only; blank-coordinate surface values
+are recomputed from the math function instead of being saved for every point.
 
 For one-agent worlds, the dashboard also includes live play/pause brain controls.
 The brain runs on the local Python server, so it can keep learning after the
 browser tab is closed as long as the server is still running and the Mac is awake.
+When the brain is paused, the dashboard saves cumulative elapsed training time
+for that world in `worlds_index.json`.
 
 To keep the Mac awake while the dashboard runs:
 

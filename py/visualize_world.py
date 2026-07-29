@@ -23,9 +23,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from brain import (
-    InternalMapBrain,
+    StaticTensorSequenceBrain,
     WorldEnvironment,
-    prediction_error,
 )
 from world_generator import (
     build_world,
@@ -372,8 +371,20 @@ HTML_PAGE = r"""<!doctype html>
       white-space: nowrap;
     }
 
+    .title-time {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 1px 5px;
+      color: #0969da;
+      background: #ddf4ff;
+      border: 1px solid #b6e3ff;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 625;
+    }
+
     #summary {
-      margin-top: 2px;
+      margin-top: 6px;
       overflow: hidden;
       color: var(--muted);
       font-size: 12px;
@@ -451,6 +462,120 @@ HTML_PAGE = r"""<!doctype html>
       border: 1px solid var(--panel-border);
       box-shadow: 0 12px 30px rgba(27, 31, 36, 0.12);
       backdrop-filter: blur(10px);
+    }
+
+    #trainingInfo {
+      right: 16px;
+      top: 84px;
+      width: 304px;
+      height: 400px;
+      min-height: 180px;
+      padding: 14px;
+      border-radius: 16px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #trainingInfo h2 {
+      margin: 0 0 16px;
+      font-size: 13px;
+    }
+
+    .training-value {
+      overflow: hidden;
+      color: var(--text);
+      font-size: 30px;
+      font-weight: 800;
+      line-height: 1;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .training-label {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .training-status {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .training-metrics {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .metric-cell {
+      min-width: 0;
+      padding: 8px;
+      background: rgba(246, 248, 250, 0.86);
+      border: 1px solid #d8dee4;
+      border-radius: 10px;
+    }
+
+    .metric-label {
+      display: block;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .metric-value {
+      display: block;
+      margin-top: 3px;
+      overflow: hidden;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 750;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .training-log {
+      min-height: 0;
+      margin-top: 12px;
+      overflow-y: auto;
+      border-top: 1px solid var(--panel-border);
+      padding-top: 8px;
+    }
+
+    .sequence-row {
+      padding: 8px 0;
+      border-bottom: 1px solid rgba(208, 215, 222, 0.7);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .sequence-row:last-child {
+      border-bottom: 0;
+    }
+
+    .sequence-row-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--text);
+      font-weight: 750;
+    }
+
+    .sequence-row-meta {
+      margin-top: 4px;
+      color: var(--muted);
+    }
+
+    .sequence-pass {
+      color: #1a7f37;
+    }
+
+    .sequence-fail {
+      color: var(--danger);
     }
 
     #legend {
@@ -724,6 +849,7 @@ HTML_PAGE = r"""<!doctype html>
         left: 16px;
       }
 
+      #trainingInfo,
       #legend,
       #details {
         display: none;
@@ -814,8 +940,16 @@ HTML_PAGE = r"""<!doctype html>
           <input id="seedInput" name="seed" type="number" step="1" value="42" />
         </div>
         <div class="field">
-          <label for="areaMultiplierInput">area_multiplier</label>
-          <input id="areaMultiplierInput" name="area_multiplier" type="number" step="0.1" value="3" />
+          <label for="chaosLevelInput">chaos_level</label>
+          <input
+            id="chaosLevelInput"
+            name="chaos_level"
+            type="number"
+            min="0"
+            max="1"
+            step="0.05"
+            value="0.5"
+          />
         </div>
         <div class="field">
           <label for="baseWidthInput">base_world_width</label>
@@ -869,6 +1003,15 @@ HTML_PAGE = r"""<!doctype html>
     </div>
   </header>
 
+  <div id="trainingInfo" class="panel">
+    <h2>Training Info</h2>
+    <div id="trainingIterations" class="training-value">0</div>
+    <div class="training-label">iterations</div>
+    <div id="trainingStatus" class="training-status">Paused</div>
+    <div id="trainingMetrics" class="training-metrics"></div>
+    <div id="trainingLog" class="training-log"></div>
+  </div>
+
   <div id="legend" class="panel">
     <h2>Legend</h2>
     <div class="legend-row">
@@ -912,7 +1055,13 @@ HTML_PAGE = r"""<!doctype html>
     const resourceLegend = document.getElementById("resourceLegend");
     const sidebar = document.getElementById("sidebar");
     const topbar = document.querySelector(".topbar");
+    const trainingInfoPanel = document.getElementById("trainingInfo");
     const legendPanel = document.getElementById("legend");
+    const detailsPanel = document.getElementById("details");
+    const trainingIterations = document.getElementById("trainingIterations");
+    const trainingStatus = document.getElementById("trainingStatus");
+    const trainingMetrics = document.getElementById("trainingMetrics");
+    const trainingLog = document.getElementById("trainingLog");
     const resetButton = document.getElementById("reset");
     const refreshButton = document.getElementById("refresh");
     const playBrainButton = document.getElementById("playBrain");
@@ -969,6 +1118,14 @@ HTML_PAGE = r"""<!doctype html>
       brainStream: null,
       brainStreamWorldId: null,
       brainIterations: 0,
+      trainingTimeMs: 0,
+      trainingStartedAt: null,
+      trainingTimer: null,
+      sequenceLevel: 1,
+      sequenceAttempts: 0,
+      lastSequence: null,
+      recentSequences: [],
+      brainStepSize: null,
       brainStepsPerTick: 1,
       brainServerIntervalMs: 10,
       needsDraw: false,
@@ -993,12 +1150,33 @@ HTML_PAGE = r"""<!doctype html>
         .replaceAll("'", "&#039;");
     }
 
+    function layoutRightPanels() {
+      if (window.innerWidth <= 900 || legendPanel.hidden) {
+        trainingInfoPanel.style.top = "";
+        trainingInfoPanel.style.height = "";
+        return;
+      }
+
+      const topbarRect = topbar.getBoundingClientRect();
+      const legendRect = legendPanel.getBoundingClientRect();
+      const detailsRect = detailsPanel.getBoundingClientRect();
+      if (!topbarRect.height || !legendRect.height || !detailsRect.height) return;
+
+      const sharedGap = Math.max(16, detailsRect.top - legendRect.bottom);
+      const targetTop = Math.round(topbarRect.bottom + sharedGap);
+      const targetHeight = Math.floor(legendRect.top - targetTop - sharedGap);
+
+      trainingInfoPanel.style.top = `${targetTop}px`;
+      trainingInfoPanel.style.height = `${Math.max(180, targetHeight)}px`;
+    }
+
     function resizeCanvas() {
       const dpr = window.devicePixelRatio || 1;
       const rect = canvas.getBoundingClientRect();
       canvas.width = Math.floor(rect.width * dpr);
       canvas.height = Math.floor(rect.height * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      layoutRightPanels();
       if (state.world) {
         fitWorldToScreen();
       }
@@ -1022,8 +1200,12 @@ HTML_PAGE = r"""<!doctype html>
       const gap = 36;
       const sidebarRect = sidebar.getBoundingClientRect();
       const topbarRect = topbar.getBoundingClientRect();
-      const legendRect = legendPanel.getBoundingClientRect();
-      const rightPanelLeft = legendRect.width > 0 ? legendRect.left : width - 28;
+      const rightPanels = [trainingInfoPanel, legendPanel]
+        .map((panel) => panel.getBoundingClientRect())
+        .filter((rect) => rect.width > 0 && rect.height > 0);
+      const rightPanelLeft = rightPanels.length
+        ? Math.min(...rightPanels.map((rect) => rect.left))
+        : width - 28;
       const left = sidebarRect.right + gap;
       const top = topbarRect.bottom + 28;
       const rightEdge = Math.max(left + 240, rightPanelLeft - gap);
@@ -1052,11 +1234,106 @@ HTML_PAGE = r"""<!doctype html>
         viewport.top + (viewport.height - metadata.world_height * state.scale) / 2;
     }
 
-    function formatAreaMultiplier(value) {
-      if (Number.isInteger(value)) {
-        return `${value}x area`;
+    function formatChaosLevel(value) {
+      return `chaos ${Number(value ?? 0.5).toFixed(2)}`;
+    }
+
+    function formatTrainingTime(milliseconds) {
+      let remaining = Math.max(0, Math.floor(Number(milliseconds) || 0));
+      const days = Math.floor(remaining / 86400000);
+      remaining %= 86400000;
+      const hours = Math.floor(remaining / 3600000);
+      remaining %= 3600000;
+      const minutes = Math.floor(remaining / 60000);
+      remaining %= 60000;
+      const seconds = Math.floor(remaining / 1000);
+      const ms = remaining % 1000;
+
+      return `${days}d - ${String(hours).padStart(2, "0")}h - ${String(minutes).padStart(2, "0")}m - ${String(seconds).padStart(2, "0")}s - ${String(ms).padStart(3, "0")}ms`;
+    }
+
+    function currentTrainingTimeMs() {
+      const baseTime = Math.max(0, Number(state.trainingTimeMs) || 0);
+      if (!state.brainRunning || state.trainingStartedAt === null) {
+        return baseTime;
       }
-      return `${Number(value).toFixed(2)}x area`;
+      return baseTime + Math.max(0, Date.now() - state.trainingStartedAt);
+    }
+
+    function renderTrainingInfo() {
+      const last = state.lastSequence;
+      const errorRate = last ? `${Math.round(last.error_rate * 100)}%` : "n/a";
+      const result = last ? (last.passed ? "passed" : "failed") : "waiting";
+      const wrong = last ? `${last.wrong_count}/${last.completed_length}` : "n/a";
+      const stepSize = state.brainStepSize
+        ? state.brainStepSize.toLocaleString()
+        : defaultBrainStepSize().toLocaleString();
+
+      trainingIterations.textContent = state.brainIterations.toLocaleString();
+      trainingStatus.textContent = state.brainRunning ? "Running" : "Paused";
+      trainingMetrics.innerHTML = [
+        ["level", state.sequenceLevel.toLocaleString()],
+        ["attempts", state.sequenceAttempts.toLocaleString()],
+        ["last result", result],
+        ["wrong", wrong],
+        ["error rate", errorRate],
+        ["step size", stepSize],
+        ["update strength", last ? Number(last.future_update_strength).toFixed(2) : "n/a"],
+      ]
+        .map(([label, value]) => `<div class="metric-cell">
+          <span class="metric-label">${escapeHtml(label)}</span>
+          <span class="metric-value">${escapeHtml(value)}</span>
+        </div>`)
+        .join("");
+
+      if (!state.recentSequences.length) {
+        trainingLog.innerHTML = `<div class="sequence-row">
+          <div class="sequence-row-meta">No completed sequences yet.</div>
+        </div>`;
+        layoutRightPanels();
+        return;
+      }
+
+      trainingLog.innerHTML = state.recentSequences
+        .slice(0, 24)
+        .map((sequence) => {
+          const statusClass = sequence.passed ? "sequence-pass" : "sequence-fail";
+          const statusText = sequence.passed ? "pass" : "fail";
+          const actions = sequence.action_codes?.join(", ") || "";
+          return `<div class="sequence-row">
+            <div class="sequence-row-title">
+              <span>#${escapeHtml(sequence.attempt)}</span>
+              <span class="${statusClass}">${statusText}</span>
+            </div>
+            <div class="sequence-row-meta">
+              len ${escapeHtml(sequence.completed_length)}/${escapeHtml(sequence.requested_length)}
+              · wrong ${escapeHtml(sequence.wrong_count)}
+              · error ${escapeHtml(Math.round(sequence.error_rate * 100))}%
+            </div>
+            <div class="sequence-row-meta">codes [${escapeHtml(actions)}]</div>
+          </div>`;
+        })
+        .join("");
+      layoutRightPanels();
+    }
+
+    function startTrainingTimer() {
+      if (state.trainingTimer) return;
+
+      const tick = () => {
+        if (!state.trainingTimer) return;
+        renderWorldSummary();
+        renderTrainingInfo();
+        state.trainingTimer = requestAnimationFrame(tick);
+      };
+
+      state.trainingTimer = requestAnimationFrame(tick);
+    }
+
+    function stopTrainingTimer() {
+      if (!state.trainingTimer) return;
+      cancelAnimationFrame(state.trainingTimer);
+      state.trainingTimer = null;
     }
 
     function worldToScreen(coordinate) {
@@ -1087,6 +1364,13 @@ HTML_PAGE = r"""<!doctype html>
 
     function worldMachines() {
       return mapValues(state.world.machines);
+    }
+
+    function defaultBrainStepSize() {
+      if (!state.world) return 1;
+      const metadata = state.world.metadata;
+      const smallestDimension = Math.min(metadata.world_width, metadata.world_height);
+      return Math.max(1, Math.round(smallestDimension / 225));
     }
 
     function requestDraw() {
@@ -1442,6 +1726,7 @@ HTML_PAGE = r"""<!doctype html>
           </div>`
         ))
         .join("");
+      layoutRightPanels();
     }
 
     function selectedWorldMeta() {
@@ -1491,6 +1776,7 @@ HTML_PAGE = r"""<!doctype html>
       if (!state.world) {
         title.textContent = "None";
         summary.textContent = "No world selected";
+        renderTrainingInfo();
         return;
       }
 
@@ -1504,11 +1790,11 @@ HTML_PAGE = r"""<!doctype html>
         : `${metadata.world_width} x ${metadata.world_height}`;
 
       const displayName = meta ? meta.display_name : "Selected World";
-      title.textContent = `${displayName} - ${state.brainIterations.toLocaleString()}`;
+      title.innerHTML = `${escapeHtml(displayName)} -<span class="title-time">${escapeHtml(formatTrainingTime(currentTrainingTimeMs()))}</span>`;
       summary.textContent = [
         `seed ${metadata.seed}`,
         shapeSummary,
-        formatAreaMultiplier(metadata.area_multiplier || 1),
+        formatChaosLevel(metadata.chaos_level),
         `${agentCount.toLocaleString()} agents`,
         `${depositCount.toLocaleString()} deposits`,
         `${machineCount.toLocaleString()} machines`,
@@ -1526,13 +1812,42 @@ HTML_PAGE = r"""<!doctype html>
 
     function setBrainState(brain) {
       state.brainIterations = brain?.iterations || 0;
+      if (Number.isFinite(Number(brain?.training_time_ms))) {
+        state.trainingTimeMs = Math.max(0, Math.floor(Number(brain.training_time_ms)));
+        const meta = selectedWorldMeta();
+        if (meta) {
+          meta.training_time_ms = state.trainingTimeMs;
+        }
+      } else {
+        const meta = selectedWorldMeta();
+        state.trainingTimeMs = Math.max(
+          0,
+          Math.floor(Number(meta?.training_time_ms) || 0),
+        );
+      }
       state.brainRunning = Boolean(brain?.running);
+      state.trainingStartedAt = state.brainRunning ? Date.now() : null;
+      state.sequenceLevel = Math.max(1, Math.floor(Number(brain?.sequence_level) || 1));
+      state.sequenceAttempts = Math.max(
+        0,
+        Math.floor(Number(brain?.sequence_attempts) || 0),
+      );
+      if (Number.isFinite(Number(brain?.step_size))) {
+        state.brainStepSize = Math.max(1, Math.floor(Number(brain.step_size)));
+      }
+      state.lastSequence = brain?.last_sequence || null;
+      state.recentSequences = Array.isArray(brain?.recent_sequences)
+        ? brain.recent_sequences
+        : [];
       renderBrainStatus();
       renderWorldSummary();
+      renderTrainingInfo();
 
       if (state.brainRunning) {
+        startTrainingTimer();
         openBrainStream();
       } else {
+        stopTrainingTimer();
         closeBrainStream();
       }
     }
@@ -1618,6 +1933,7 @@ HTML_PAGE = r"""<!doctype html>
         method: "POST",
         body: JSON.stringify({
           world_id: state.selectedWorldId,
+          step_size: state.brainStepSize || defaultBrainStepSize(),
           steps_per_tick: state.brainStepsPerTick,
           interval_ms: state.brainServerIntervalMs,
         }),
@@ -1655,6 +1971,7 @@ HTML_PAGE = r"""<!doctype html>
         method: "POST",
         body: JSON.stringify({
           world_id: state.selectedWorldId,
+          step_size: state.brainStepSize || defaultBrainStepSize(),
           steps: state.brainStepsPerTick,
         }),
       });
@@ -1738,6 +2055,7 @@ HTML_PAGE = r"""<!doctype html>
 
       state.world = await response.json();
       state.selectedWorldId = worldId;
+      state.brainStepSize = null;
       renderLegend(state.world.metadata.resource_types);
       renderWorldSummary();
       renderWorldList();
@@ -1769,7 +2087,7 @@ HTML_PAGE = r"""<!doctype html>
           seed: Math.trunc(numberField(formData, "seed")),
           base_world_width: Math.trunc(numberField(formData, "base_world_width")),
           base_world_height: Math.trunc(numberField(formData, "base_world_height")),
-          area_multiplier: numberField(formData, "area_multiplier"),
+          chaos_level: numberField(formData, "chaos_level"),
           agent_count: Math.trunc(numberField(formData, "agent_count")),
           deposit_count: Math.trunc(numberField(formData, "deposit_count")),
           total_resource_units: Math.trunc(numberField(formData, "total_resource_units")),
@@ -2017,7 +2335,14 @@ def normalize_index(index, index_path=None):
             world_path = path_for_index(index_path, world["file_path"])
             if not world_path.exists():
                 continue
-        normalized_worlds.append(world)
+
+        normalized_world = dict(world)
+        try:
+            training_time_ms = int(normalized_world.get("training_time_ms", 0))
+        except (TypeError, ValueError):
+            training_time_ms = 0
+        normalized_world["training_time_ms"] = max(0, training_time_ms)
+        normalized_worlds.append(normalized_world)
 
     selected_world_id = index.get("selected_world_id")
     if selected_world_id not in {world["id"] for world in normalized_worlds}:
@@ -2057,6 +2382,25 @@ def find_world_entry(index, world_id):
         if world["id"] == world_id:
             return world
     raise KeyError(f"Unknown world id: {world_id}")
+
+
+def world_training_time_ms(index_path, world_id):
+    """Return persisted cumulative training time for one world."""
+    with INDEX_LOCK:
+        index = load_index(index_path)
+        entry = find_world_entry(index, world_id)
+        return int(entry.get("training_time_ms", 0))
+
+
+def add_world_training_time_ms(index_path, world_id, elapsed_ms):
+    """Add elapsed training time to one world and persist the index."""
+    with INDEX_LOCK:
+        index = load_index(index_path)
+        entry = find_world_entry(index, world_id)
+        current_ms = int(entry.get("training_time_ms", 0))
+        entry["training_time_ms"] = max(0, current_ms + max(0, int(elapsed_ms)))
+        save_index(index_path, index)
+        return entry["training_time_ms"]
 
 
 def selected_or_requested_world_id(index, requested_id):
@@ -2104,6 +2448,7 @@ class BrainLabRuntime:
         epsilon=0.15,
         steps_per_tick=1,
         loop_interval_seconds=0.01,
+        training_time_ms=0,
     ):
         self.world_id = world_id
         self.world = world
@@ -2112,67 +2457,133 @@ class BrainLabRuntime:
         self.loop_interval_seconds = loop_interval_seconds
         self.running = False
         self.runner_thread = None
+        self.training_time_ms = max(0, int(training_time_ms))
+        self.training_started_at = None
         self.env = WorldEnvironment(world)
         self.rng = random.Random(world["metadata"].get("seed", 1))
-        self.brain = InternalMapBrain.create(
-            metadata=world["metadata"],
-            feature_pairs=feature_pairs,
-            learning_rate=learning_rate,
-            epsilon=epsilon,
-            rng=self.rng,
-        )
+        self.brain = StaticTensorSequenceBrain()
         self.iterations = 0
+        self.sequence_level = 1
+        self.sequence_attempts = 0
         self.unique_coordinates_seen = {coordinate_key(self.env.coordinate)}
         self.deposit_ids_seen = set()
         self.last_action = None
         self.last_prediction_error = None
         self.last_event = None
+        self.last_sequence = None
+        self.recent_sequences = []
 
         initial_observation = self.env.observe()
         initial_deposit = initial_observation["cell"]["deposit_id"]
         if initial_deposit:
             self.deposit_ids_seen.add(initial_deposit)
-        self.brain.learn(initial_observation)
+
+    def start_training_timer(self):
+        """Start counting wall-clock training time for this runtime."""
+        if self.training_started_at is None:
+            self.training_started_at = time.monotonic()
+
+    def current_training_time_ms(self):
+        """Return persisted time plus the current unpaused run."""
+        if self.training_started_at is None:
+            return self.training_time_ms
+        elapsed_ms = int((time.monotonic() - self.training_started_at) * 1000)
+        return self.training_time_ms + max(0, elapsed_ms)
+
+    def pause_training_timer(self):
+        """Stop counting wall-clock time and return the elapsed increment."""
+        if self.training_started_at is None:
+            return 0
+
+        elapsed_ms = int((time.monotonic() - self.training_started_at) * 1000)
+        elapsed_ms = max(0, elapsed_ms)
+        self.training_time_ms += elapsed_ms
+        self.training_started_at = None
+        return elapsed_ms
 
     def step_once(self):
-        """Advance the brain/world by one movement decision."""
-        before = self.env.coordinate
-        valid_actions = self.env.valid_actions(self.step_size)
-        predictions = self.brain.predict_actions(
-            before,
-            valid_actions,
-            self.step_size,
-        )
-        action = self.brain.choose_action(predictions)
-        predicted = predictions[action]
+        """Run one full forced random sequence attempt."""
+        requested_length = self.sequence_level
+        sequence_state = self.brain.initial_state()
+        steps = []
+        wrong_count = 0
 
-        self.env.move(action, self.step_size)
-        observation = self.env.observe(last_action=action)
-        error = prediction_error(
-            predicted["predicted_cell"],
-            observation["cell"],
-            self.brain.model.amount_scale,
-        )
-        observation["last_prediction_error"] = error["total"]
-        train_loss = self.brain.learn(observation)
+        for step_number in range(1, requested_length + 1):
+            valid_actions = self.env.valid_actions(self.step_size)
+            if not valid_actions:
+                break
 
-        self.iterations += 1
-        self.unique_coordinates_seen.add(coordinate_key(self.env.coordinate))
-        deposit_id = observation["cell"]["deposit_id"]
-        if deposit_id:
-            self.deposit_ids_seen.add(deposit_id)
+            before = self.env.coordinate
+            action = self.rng.choice(valid_actions)
+            prediction = self.brain.predict_surface(
+                sequence_state,
+                action,
+                step_number,
+            )
+            sequence_state = prediction["next_state"]
 
-        self.last_action = action
-        self.last_prediction_error = error["total"]
-        self.last_event = {
-            "iteration": self.iterations,
-            "from": before,
-            "to": self.env.coordinate,
-            "action": action,
-            "prediction_error": error,
-            "train_loss": train_loss,
-            "observation": observation,
+            self.env.move(action, self.step_size)
+            observation = self.env.observe(last_action=action)
+            actual_surface = observation["cell"]["surface_code"]
+            correct = prediction["predicted_surface"] == actual_surface
+            if not correct:
+                wrong_count += 1
+
+            self.iterations += 1
+            self.unique_coordinates_seen.add(coordinate_key(self.env.coordinate))
+            deposit_id = observation["cell"]["deposit_id"]
+            if deposit_id:
+                self.deposit_ids_seen.add(deposit_id)
+
+            step_record = {
+                "step": step_number,
+                "iteration": self.iterations,
+                "from": before,
+                "to": self.env.coordinate,
+                "action": action,
+                "action_code": prediction["action_code"],
+                "predicted_surface": prediction["predicted_surface"],
+                "actual_surface": actual_surface,
+                "correct": correct,
+                "brain_number": prediction["brain_number"],
+                "state_size_before": prediction["state_size_before"],
+                "state_size_after": prediction["state_size_after"],
+                "generated_preview": prediction["generated_preview"],
+            }
+            steps.append(step_record)
+            self.last_action = action
+            self.last_prediction_error = 0.0 if correct else 1.0
+            self.last_event = step_record
+
+        completed_length = len(steps)
+        correct_count = completed_length - wrong_count
+        error_rate = wrong_count / completed_length if completed_length else 1.0
+        passed = completed_length == requested_length and wrong_count == 0
+        previous_level = self.sequence_level
+
+        if passed:
+            self.sequence_level += 1
+        else:
+            self.sequence_level = 1
+
+        self.sequence_attempts += 1
+        self.last_sequence = {
+            "attempt": self.sequence_attempts,
+            "requested_length": requested_length,
+            "completed_length": completed_length,
+            "previous_level": previous_level,
+            "next_level": self.sequence_level,
+            "passed": passed,
+            "correct_count": correct_count,
+            "wrong_count": wrong_count,
+            "error_rate": error_rate,
+            "future_update_strength": error_rate,
+            "actions": [step["action"] for step in steps],
+            "action_codes": [step["action_code"] for step in steps],
+            "steps": steps,
         }
+        self.recent_sequences.insert(0, self.last_sequence)
+        self.recent_sequences = self.recent_sequences[:40]
 
     def step(self, count):
         """Advance the runtime count iterations."""
@@ -2188,6 +2599,9 @@ class BrainLabRuntime:
             "world_id": self.world_id,
             "agent_id": self.env.agent_id,
             "iterations": self.iterations,
+            "training_time_ms": self.current_training_time_ms(),
+            "sequence_level": self.sequence_level,
+            "sequence_attempts": self.sequence_attempts,
             "coordinate": self.env.coordinate,
             "step_size": self.step_size,
             "steps_per_tick": self.steps_per_tick,
@@ -2197,6 +2611,8 @@ class BrainLabRuntime:
             "unique_coordinates_seen": len(self.unique_coordinates_seen),
             "deposits_seen": len(self.deposit_ids_seen),
             "last_event": self.last_event,
+            "last_sequence": self.last_sequence,
+            "recent_sequences": self.recent_sequences,
         }
 
     def payload(self, include_world=False):
@@ -2222,6 +2638,13 @@ class BrainLabManager:
             selected_world_id, world = load_world_object(self.index_path, world_id)
             previous_runtime = self.runtimes.get(selected_world_id)
             if previous_runtime is not None:
+                elapsed_ms = previous_runtime.pause_training_timer()
+                if elapsed_ms:
+                    previous_runtime.training_time_ms = add_world_training_time_ms(
+                        self.index_path,
+                        selected_world_id,
+                        elapsed_ms,
+                    )
                 previous_runtime.running = False
 
             runtime = BrainLabRuntime(
@@ -2241,6 +2664,10 @@ class BrainLabManager:
                 loop_interval_seconds=max(
                     0.001,
                     float(options.get("interval_ms", 10)) / 1000.0,
+                ),
+                training_time_ms=world_training_time_ms(
+                    self.index_path,
+                    selected_world_id,
                 ),
             )
             self.runtimes[selected_world_id] = runtime
@@ -2272,6 +2699,14 @@ class BrainLabManager:
                         "running": False,
                         "world_id": selected_world_id,
                         "iterations": 0,
+                        "training_time_ms": world_training_time_ms(
+                            self.index_path,
+                            selected_world_id,
+                        ),
+                        "sequence_level": 1,
+                        "sequence_attempts": 0,
+                        "last_sequence": None,
+                        "recent_sequences": [],
                     }
                 }
             return runtime.payload(include_world=True)
@@ -2292,6 +2727,14 @@ class BrainLabManager:
                         "running": False,
                         "world_id": world_id,
                         "iterations": 0,
+                        "training_time_ms": world_training_time_ms(
+                            self.index_path,
+                            world_id,
+                        ),
+                        "sequence_level": 1,
+                        "sequence_attempts": 0,
+                        "last_sequence": None,
+                        "recent_sequences": [],
                     }
                 }
 
@@ -2329,19 +2772,19 @@ class BrainLabManager:
                 / 1000.0,
             )
 
+            runtime.start_training_timer()
+            runtime.running = True
+
             if (
                 runtime.runner_thread is None
                 or not runtime.runner_thread.is_alive()
             ):
-                runtime.running = True
                 runtime.runner_thread = threading.Thread(
                     target=self._run_loop,
                     args=(runtime.world_id,),
                     daemon=True,
                 )
                 runtime.runner_thread.start()
-            else:
-                runtime.running = True
 
             return runtime.payload(include_world=True)
 
@@ -2351,6 +2794,13 @@ class BrainLabManager:
             runtime = self.get(world_id)
             if runtime is None:
                 return self.state(world_id)
+            elapsed_ms = runtime.pause_training_timer()
+            if elapsed_ms:
+                runtime.training_time_ms = add_world_training_time_ms(
+                    self.index_path,
+                    runtime.world_id,
+                    elapsed_ms,
+                )
             runtime.running = False
             return runtime.payload(include_world=True)
 
@@ -2426,7 +2876,7 @@ def generate_world_from_payload(index_path, worlds_dir, payload):
     seed = int_setting(payload, "seed")
     base_world_width = int_setting(payload, "base_world_width")
     base_world_height = int_setting(payload, "base_world_height")
-    area_multiplier = float_setting(payload, "area_multiplier")
+    chaos_level = float_setting(payload, "chaos_level")
     agent_count = int_setting(payload, "agent_count")
     deposit_count = int_setting(payload, "deposit_count")
     total_resource_units = int_setting(payload, "total_resource_units")
@@ -2435,7 +2885,7 @@ def generate_world_from_payload(index_path, worlds_dir, payload):
         seed=seed,
         base_world_width=base_world_width,
         base_world_height=base_world_height,
-        area_multiplier=area_multiplier,
+        chaos_level=chaos_level,
         agent_count=agent_count,
         deposit_count=deposit_count,
         total_resource_units=total_resource_units,
@@ -2458,6 +2908,7 @@ def generate_world_from_payload(index_path, worlds_dir, payload):
             "seed": seed,
             "file_path": relative_to_index(index_path, output_path),
             "created_at": utc_now_iso(),
+            "training_time_ms": 0,
         }
         index["worlds"].insert(0, entry)
         index["selected_world_id"] = world_id

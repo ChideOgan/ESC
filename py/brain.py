@@ -11,10 +11,9 @@ Hard experiment rule:
     The brain does not store a coordinate -> contents lookup table.
 
 What the brain stores:
-    - random spatial feature parameters,
-    - trainable weights,
-    - tiny recency state for movement,
-    - the current coordinate for continuing a run.
+    - a tiny fixed base vector,
+    - fixed decoder numbers,
+    - sequence score state for the current lab draft.
 
 What the simulator stores:
     - the true world JSON,
@@ -33,7 +32,13 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from world_generator import coordinate_key, empty_coordinate_entry, is_inside_circle
+from world_generator import (
+    DEFAULT_CHAOS_LEVEL,
+    coordinate_key,
+    empty_coordinate_entry,
+    is_inside_circle,
+    surface_code,
+)
 
 
 NO_ITEM = "none"
@@ -51,6 +56,67 @@ REVERSE_ACTION = {
     "move_up": "move_down",
     "move_down": "move_up",
 }
+DIRECTION_CODES = {
+    "move_up": 1,
+    "move_down": 2,
+    "move_left": 3,
+    "move_right": 4,
+}
+
+
+class StaticTensorSequenceBrain:
+    """Fixed-number sequence predictor for the first surface-code lab.
+
+    This is intentionally dumb. It does not learn yet. It takes a direction,
+    combines that direction with a tiny internal vector, and decodes the result
+    into a surface-code guess from 0-9.
+    """
+
+    def __init__(
+        self,
+        base_vector=None,
+        decoder_bias=7,
+        decoder_step_weight=3,
+        max_state_values=2048,
+    ):
+        self.base_vector = list(base_vector or [5])
+        self.decoder_bias = decoder_bias
+        self.decoder_step_weight = decoder_step_weight
+        self.max_state_values = max_state_values
+
+    def initial_state(self):
+        """Return the starting vector for one sequence attempt."""
+        return list(self.base_vector)
+
+    def predict_surface(self, sequence_state, action, step_number):
+        """Predict the next coordinate's surface code without updating weights."""
+        action_code = DIRECTION_CODES[action]
+        generated_values = [action_code * value for value in sequence_state]
+        next_state = [*sequence_state, *generated_values]
+
+        if len(next_state) > self.max_state_values:
+            next_state = next_state[-self.max_state_values :]
+
+        weighted_sum = sum(
+            (index + 1) * value for index, value in enumerate(generated_values)
+        )
+        brain_number = (
+            weighted_sum
+            + (action_code * self.decoder_bias)
+            + (step_number * self.decoder_step_weight)
+            + len(next_state)
+        )
+        predicted_surface = abs(int(brain_number)) % 10
+
+        return {
+            "predicted_surface": predicted_surface,
+            "brain_number": brain_number,
+            "action_code": action_code,
+            "state_size_before": len(sequence_state),
+            "state_size_after": len(next_state),
+            "generated_preview": generated_values[:8],
+            "next_state": next_state,
+        }
 
 
 def clamp(value, low, high):
@@ -506,6 +572,13 @@ class WorldEnvironment:
     def observe(self, last_action=None, last_prediction_error=None):
         """Return what the agent can observe at its current coordinate."""
         coordinate = self.coordinate
+        x, y = coordinate
+        surface = surface_code(
+            self.metadata.get("seed", 0),
+            x,
+            y,
+            self.metadata.get("chaos_level", DEFAULT_CHAOS_LEVEL),
+        )
         key = coordinate_key(coordinate)
         entry = self.world["coordinates"].get(key, empty_coordinate_entry())
         deposit_id = entry["deposits"][0] if entry["deposits"] else None
@@ -513,6 +586,7 @@ class WorldEnvironment:
         if deposit_id:
             deposit = self.world["deposits"][deposit_id]
             cell = {
+                "surface_code": surface,
                 "has_deposit": True,
                 "deposit_id": deposit_id,
                 "item": deposit["item"],
@@ -520,6 +594,7 @@ class WorldEnvironment:
             }
         else:
             cell = {
+                "surface_code": surface,
                 "has_deposit": False,
                 "deposit_id": None,
                 "item": None,

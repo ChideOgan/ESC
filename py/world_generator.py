@@ -22,7 +22,8 @@ from pathlib import Path
 
 BASE_WORLD_WIDTH = 100_000
 BASE_WORLD_HEIGHT = 100_000
-WORLD_AREA_MULTIPLIER = 3
+DEFAULT_CHAOS_LEVEL = 0.5
+SURFACE_CODE_COUNT = 10
 
 AGENT_COUNT = 8_200
 DEPOSIT_COUNT = 10_000
@@ -53,12 +54,20 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--base-world-width", type=int, default=BASE_WORLD_WIDTH)
     parser.add_argument("--base-world-height", type=int, default=BASE_WORLD_HEIGHT)
-    parser.add_argument("--area-multiplier", type=float, default=WORLD_AREA_MULTIPLIER)
+    parser.add_argument(
+        "--chaos-level",
+        type=float,
+        default=DEFAULT_CHAOS_LEVEL,
+        help="0.0 gives smoother surface codes; 1.0 gives noisier surface codes.",
+    )
     parser.add_argument(
         "--world-radius",
         type=int,
         default=None,
-        help="Override the generated circle radius. By default it is derived from the base area and area multiplier.",
+        help=(
+            "Override the generated circle radius. By default it is derived "
+            "from base width x height."
+        ),
     )
     parser.add_argument("--agent-count", type=int, default=AGENT_COUNT)
     parser.add_argument("--deposit-count", type=int, default=DEPOSIT_COUNT)
@@ -71,46 +80,129 @@ def parse_args():
     return parser.parse_args()
 
 
-def compute_world_radius(base_world_width, base_world_height, area_multiplier):
-    """Return an integer radius whose circle is about area_multiplier times larger.
+def validate_chaos_level(chaos_level):
+    """Validate the surface-code chaos setting."""
+    if not isinstance(chaos_level, (int, float)) or isinstance(chaos_level, bool):
+        raise ValueError("Chaos level must be a number.")
+    if not 0.0 <= chaos_level <= 1.0:
+        raise ValueError("Chaos level must be between 0.0 and 1.0.")
+    return float(chaos_level)
 
-    The old map was a 100,000 x 100,000 square. The new default map is a circle
-    whose continuous area is approximately three times that old square:
 
-        pi * radius^2 ~= base_width * base_height * area_multiplier
+def compute_world_radius(base_world_width, base_world_height):
+    """Return an integer radius based directly on base width x height.
+
+    The generated world is circular. The base width and height define the target
+    continuous area:
+
+        pi * radius^2 ~= base_width * base_height
     """
     if base_world_width <= 0 or base_world_height <= 0:
         raise ValueError("Base world dimensions must be positive.")
-    if area_multiplier <= 0:
-        raise ValueError("Area multiplier must be positive.")
 
-    target_area = base_world_width * base_world_height * area_multiplier
+    target_area = base_world_width * base_world_height
     return max(1, int(round(math.sqrt(target_area / math.pi))))
+
+
+def deterministic_hash(seed, x, y, salt=0):
+    """Return a stable integer hash for seed/coordinate inputs.
+
+    Python's built-in hash is randomized between processes, so this uses a tiny
+    integer mixer instead. This is for deterministic terrain-like signals, not
+    cryptography.
+    """
+    value = (
+        (int(seed) * 374_761_393)
+        + (int(x) * 668_265_263)
+        + (int(y) * 2_147_483_647)
+        + (int(salt) * 1_274_126_177)
+    ) & 0xFFFFFFFF
+    value ^= value >> 13
+    value = (value * 1_274_126_177) & 0xFFFFFFFF
+    value ^= value >> 16
+    return value
+
+
+def deterministic_unit_noise(seed, x, y, salt=0):
+    """Return a stable pseudo-random value in [0.0, 1.0]."""
+    return deterministic_hash(seed, x, y, salt) / 0xFFFFFFFF
+
+
+def smoothstep(value):
+    """Smooth interpolation curve for deterministic coordinate noise."""
+    return value * value * (3.0 - (2.0 * value))
+
+
+def lerp(start, end, amount):
+    """Linear interpolation."""
+    return start + ((end - start) * amount)
+
+
+def smooth_noise(seed, x, y, scale, salt=0):
+    """Return deterministic smooth noise by interpolating hashed grid corners."""
+    if scale <= 0:
+        raise ValueError("Noise scale must be positive.")
+
+    scaled_x = x / scale
+    scaled_y = y / scale
+    x0 = math.floor(scaled_x)
+    y0 = math.floor(scaled_y)
+    x1 = x0 + 1
+    y1 = y0 + 1
+    tx = smoothstep(scaled_x - x0)
+    ty = smoothstep(scaled_y - y0)
+
+    n00 = deterministic_unit_noise(seed, x0, y0, salt)
+    n10 = deterministic_unit_noise(seed, x1, y0, salt)
+    n01 = deterministic_unit_noise(seed, x0, y1, salt)
+    n11 = deterministic_unit_noise(seed, x1, y1, salt)
+
+    top = lerp(n00, n10, tx)
+    bottom = lerp(n01, n11, tx)
+    return lerp(top, bottom, ty)
+
+
+def surface_code(seed, x, y, chaos_level=DEFAULT_CHAOS_LEVEL):
+    """Return the deterministic 0-9 surface code for one coordinate.
+
+    This deliberately does not store blank-coordinate data in the world JSON.
+    Any part of the simulator can recompute the same value from seed, coordinate,
+    and chaos level when it needs to know the local surface signal.
+    """
+    chaos_level = validate_chaos_level(chaos_level)
+    broad = smooth_noise(seed, x, y, scale=8192, salt=11)
+    medium = smooth_noise(seed, x, y, scale=1024, salt=23)
+    structured_value = (0.65 * broad) + (0.35 * medium)
+    chaotic_value = deterministic_unit_noise(seed, x, y, salt=97)
+    value = ((1.0 - chaos_level) * structured_value) + (chaos_level * chaotic_value)
+    return min(SURFACE_CODE_COUNT - 1, int(value * SURFACE_CODE_COUNT))
 
 
 def build_metadata(
     seed,
     base_world_width,
     base_world_height,
-    area_multiplier,
+    chaos_level,
     world_radius,
     agent_count,
     deposit_count,
     total_resource_units,
 ):
     """Build the world metadata block used by generation and visualization."""
+    chaos_level = validate_chaos_level(chaos_level)
     world_width = (world_radius * 2) + 1
     world_height = (world_radius * 2) + 1
-    target_world_area = base_world_width * base_world_height * area_multiplier
+    target_world_area = base_world_width * base_world_height
 
     return {
         "seed": seed,
         "world_shape": "circle",
         "base_world_width": base_world_width,
         "base_world_height": base_world_height,
-        "area_multiplier": area_multiplier,
+        "chaos_level": chaos_level,
+        "surface_code_count": SURFACE_CODE_COUNT,
         "target_world_area": target_world_area,
-        "actual_continuous_area": math.pi * (world_radius ** 2),
+        "actual_continuous_area": math.pi * (world_radius**2),
         "world_radius": world_radius,
         "world_center": [world_radius, world_radius],
         "world_width": world_width,
@@ -272,7 +364,7 @@ def build_world(
     seed=DEFAULT_SEED,
     base_world_width=BASE_WORLD_WIDTH,
     base_world_height=BASE_WORLD_HEIGHT,
-    area_multiplier=WORLD_AREA_MULTIPLIER,
+    chaos_level=DEFAULT_CHAOS_LEVEL,
     world_radius=None,
     agent_count=AGENT_COUNT,
     deposit_count=DEPOSIT_COUNT,
@@ -280,11 +372,11 @@ def build_world(
 ):
     """Create the full JSON-serializable world dictionary."""
     rng = random.Random(seed)
+    chaos_level = validate_chaos_level(chaos_level)
     if world_radius is None:
         world_radius = compute_world_radius(
             base_world_width,
             base_world_height,
-            area_multiplier,
         )
     if world_radius <= 0:
         raise ValueError("World radius must be positive.")
@@ -293,7 +385,7 @@ def build_world(
         seed,
         base_world_width,
         base_world_height,
-        area_multiplier,
+        chaos_level,
         world_radius,
         agent_count,
         deposit_count,
@@ -371,6 +463,8 @@ def validate_world(world):
     machines = world["machines"]
     coordinates = world["coordinates"]
     allowed_resources = set(metadata["resource_types"])
+    chaos_level = metadata.get("chaos_level", DEFAULT_CHAOS_LEVEL)
+    validate_chaos_level(chaos_level)
 
     if len(agents) != metadata["agent_count"]:
         raise ValueError("Agent count does not match metadata.")
@@ -471,7 +565,7 @@ def main():
         seed=args.seed,
         base_world_width=args.base_world_width,
         base_world_height=args.base_world_height,
-        area_multiplier=args.area_multiplier,
+        chaos_level=args.chaos_level,
         world_radius=args.world_radius,
         agent_count=args.agent_count,
         deposit_count=args.deposit_count,
@@ -483,7 +577,7 @@ def main():
     print(f"Seed: {world['metadata']['seed']}")
     print(f"Shape: {world['metadata']['world_shape']}")
     print(f"Radius: {world['metadata']['world_radius']}")
-    print(f"Area multiplier: {world['metadata']['area_multiplier']}")
+    print(f"Chaos level: {world['metadata']['chaos_level']}")
     print(f"Agents: {len(world['agents'])}")
     print(f"Deposits: {len(world['deposits'])}")
     print(f"Machines: {len(world['machines'])}")
