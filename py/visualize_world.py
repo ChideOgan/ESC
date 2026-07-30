@@ -42,6 +42,9 @@ DEFAULT_PORT = 8000
 FORECAST_BATCH_SIZE = 100
 DEFAULT_FORECAST_PASS_PERCENT = 90.0
 MAX_FORECAST_LEVEL = 100
+DEFAULT_AUTO_INCREASE_BY = 1
+DEFAULT_AUTO_INCREASE_PASSES = 100
+MAX_AUTO_INCREASE_PASSES = 100_000
 
 REQUIRED_WORLD_KEYS = {"metadata", "agents", "deposits", "machines", "coordinates"}
 INDEX_LOCK = threading.RLock()
@@ -584,6 +587,7 @@ HTML_PAGE = r"""<!doctype html>
       align-items: center;
       justify-content: space-between;
       gap: 12px;
+      margin-top: 6px;
       color: var(--muted);
       font-size: 12px;
       font-weight: 700;
@@ -637,6 +641,51 @@ HTML_PAGE = r"""<!doctype html>
     .console-toggle input:disabled + .toggle-track {
       cursor: not-allowed;
       opacity: 0.55;
+    }
+
+    .auto-increase-settings {
+      display: grid;
+      grid-template-columns: auto 44px auto 54px auto;
+      align-items: center;
+      justify-content: center;
+      column-gap: 8px;
+      margin: 0 0 2px;
+      min-height: 30px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .auto-increase-number {
+      width: 100%;
+      height: 28px;
+      padding: 0 5px;
+      color: var(--text);
+      background: #ffffff;
+      border: 1px solid var(--panel-border);
+      border-radius: 6px;
+      font: inherit;
+      font-variant-numeric: tabular-nums;
+      text-align: center;
+      appearance: textfield;
+      -moz-appearance: textfield;
+    }
+
+    .auto-increase-number::-webkit-inner-spin-button,
+    .auto-increase-number::-webkit-outer-spin-button {
+      margin: 0;
+      -webkit-appearance: none;
+    }
+
+    .auto-increase-number:focus {
+      outline: 2px solid rgba(9, 105, 218, 0.2);
+      border-color: var(--accent);
+    }
+
+    .auto-increase-number:disabled {
+      cursor: not-allowed;
+      color: #8c959f;
+      background: #f6f8fa;
     }
 
     .training-metrics {
@@ -1132,6 +1181,13 @@ HTML_PAGE = r"""<!doctype html>
         <input id="autoIncreaseLevelInput" type="checkbox" role="switch" />
         <span class="toggle-track" aria-hidden="true"></span>
       </label>
+      <div class="auto-increase-settings" aria-label="Auto increase length settings">
+        <span>Increase</span>
+        <input id="autoIncreaseByInput" class="auto-increase-number" type="number" min="1" max="100" step="1" value="1" inputmode="numeric" aria-label="Increase length by" disabled />
+        <span>every</span>
+        <input id="autoIncreasePassesInput" class="auto-increase-number" type="number" min="1" max="100000" step="1" value="100" inputmode="numeric" aria-label="Consecutive passing batches required" disabled />
+        <span>passes</span>
+      </div>
     </div>
     <div id="trainingMetrics" class="training-metrics"></div>
   </div>
@@ -1190,6 +1246,8 @@ HTML_PAGE = r"""<!doctype html>
     const increasePassGradeButton = document.getElementById("increasePassGrade");
     const passGradeInput = document.getElementById("passGradeInput");
     const autoIncreaseLevelInput = document.getElementById("autoIncreaseLevelInput");
+    const autoIncreaseByInput = document.getElementById("autoIncreaseByInput");
+    const autoIncreasePassesInput = document.getElementById("autoIncreasePassesInput");
     const resetButton = document.getElementById("reset");
     const refreshButton = document.getElementById("refresh");
     const playBrainButton = document.getElementById("playBrain");
@@ -1262,6 +1320,9 @@ HTML_PAGE = r"""<!doctype html>
       passThresholdPercent: 90,
       targetReached: false,
       autoIncreaseLevel: false,
+      autoIncreaseBy: 1,
+      autoIncreasePasses: 100,
+      consecutivePassingBatches: 0,
       brainStepSize: null,
       brainStepsPerTick: 1,
       brainServerIntervalMs: 10,
@@ -1409,12 +1470,30 @@ HTML_PAGE = r"""<!doctype html>
       return Math.max(1, Math.min(100, Math.floor(number)));
     }
 
+    function clampAutoIncreaseBy(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return state.autoIncreaseBy;
+      return Math.max(1, Math.min(100, Math.floor(number)));
+    }
+
+    function clampAutoIncreasePasses(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return state.autoIncreasePasses;
+      return Math.max(1, Math.min(100000, Math.floor(number)));
+    }
+
     function syncTrainingInputs() {
       if (document.activeElement !== forecastLevelInput) {
         forecastLevelInput.value = String(state.forecastLevel);
       }
       if (document.activeElement !== passGradeInput) {
         passGradeInput.value = String(state.passThresholdPercent);
+      }
+      if (document.activeElement !== autoIncreaseByInput) {
+        autoIncreaseByInput.value = String(state.autoIncreaseBy);
+      }
+      if (document.activeElement !== autoIncreasePassesInput) {
+        autoIncreasePassesInput.value = String(state.autoIncreasePasses);
       }
       autoIncreaseLevelInput.checked = state.autoIncreaseLevel;
     }
@@ -1932,6 +2011,8 @@ HTML_PAGE = r"""<!doctype html>
       decreasePassGradeButton.disabled = !hasWorld || state.passThresholdPercent <= 0;
       increasePassGradeButton.disabled = !hasWorld || state.passThresholdPercent >= 100;
       autoIncreaseLevelInput.disabled = !hasWorld;
+      autoIncreaseByInput.disabled = !hasWorld || !state.autoIncreaseLevel;
+      autoIncreasePassesInput.disabled = !hasWorld || !state.autoIncreaseLevel;
       playBrainButton.classList.toggle("is-active", state.brainRunning);
       pauseBrainButton.classList.toggle("is-active", hasWorld && !state.brainRunning);
     }
@@ -1985,6 +2066,18 @@ HTML_PAGE = r"""<!doctype html>
         : 90;
       state.targetReached = Boolean(brain?.target_reached);
       state.autoIncreaseLevel = Boolean(brain?.auto_increase_level);
+      state.autoIncreaseBy = Math.max(
+        1,
+        Math.floor(Number(brain?.auto_increase_by) || 1),
+      );
+      state.autoIncreasePasses = Math.max(
+        1,
+        Math.floor(Number(brain?.auto_increase_passes) || 100),
+      );
+      state.consecutivePassingBatches = Math.max(
+        0,
+        Math.floor(Number(brain?.consecutive_passing_batches) || 0),
+      );
       if (Number.isFinite(Number(brain?.step_size))) {
         state.brainStepSize = Math.max(1, Math.floor(Number(brain.step_size)));
       }
@@ -2087,6 +2180,8 @@ HTML_PAGE = r"""<!doctype html>
           interval_ms: state.brainServerIntervalMs,
           pass_threshold_percent: state.passThresholdPercent,
           auto_increase_level: state.autoIncreaseLevel,
+          auto_increase_by: state.autoIncreaseBy,
+          auto_increase_passes: state.autoIncreasePasses,
         }),
       });
 
@@ -2126,6 +2221,8 @@ HTML_PAGE = r"""<!doctype html>
           steps: state.brainStepsPerTick,
           pass_threshold_percent: state.passThresholdPercent,
           auto_increase_level: state.autoIncreaseLevel,
+          auto_increase_by: state.autoIncreaseBy,
+          auto_increase_passes: state.autoIncreasePasses,
         }),
       });
 
@@ -2151,6 +2248,8 @@ HTML_PAGE = r"""<!doctype html>
           interval_ms: state.brainServerIntervalMs,
           pass_threshold_percent: state.passThresholdPercent,
           auto_increase_level: state.autoIncreaseLevel,
+          auto_increase_by: state.autoIncreaseBy,
+          auto_increase_passes: state.autoIncreasePasses,
         }),
       });
 
@@ -2178,6 +2277,20 @@ HTML_PAGE = r"""<!doctype html>
       return setPassGrade(state.passThresholdPercent + delta);
     }
 
+    async function setAutoIncreaseBy(value) {
+      state.autoIncreaseBy = clampAutoIncreaseBy(value);
+      syncTrainingInputs();
+      renderTrainingInfo();
+      await updateBrainSettings();
+    }
+
+    async function setAutoIncreasePasses(value) {
+      state.autoIncreasePasses = clampAutoIncreasePasses(value);
+      syncTrainingInputs();
+      renderTrainingInfo();
+      await updateBrainSettings();
+    }
+
     async function updateBrainSettings() {
       if (!state.selectedWorldId) return;
       if (!state.brainActive) {
@@ -2196,6 +2309,8 @@ HTML_PAGE = r"""<!doctype html>
           interval_ms: state.brainServerIntervalMs,
           pass_threshold_percent: state.passThresholdPercent,
           auto_increase_level: state.autoIncreaseLevel,
+          auto_increase_by: state.autoIncreaseBy,
+          auto_increase_passes: state.autoIncreasePasses,
         }),
       });
 
@@ -2455,7 +2570,20 @@ HTML_PAGE = r"""<!doctype html>
     });
     autoIncreaseLevelInput.addEventListener("change", () => {
       state.autoIncreaseLevel = autoIncreaseLevelInput.checked;
+      syncTrainingInputs();
+      renderBrainStatus();
+      renderTrainingInfo();
       updateBrainSettings().catch((error) => {
+        showLoading(error.message);
+      });
+    });
+    autoIncreaseByInput.addEventListener("change", () => {
+      setAutoIncreaseBy(autoIncreaseByInput.value).catch((error) => {
+        showLoading(error.message);
+      });
+    });
+    autoIncreasePassesInput.addEventListener("change", () => {
+      setAutoIncreasePasses(autoIncreasePassesInput.value).catch((error) => {
         showLoading(error.message);
       });
     });
@@ -2722,6 +2850,18 @@ def boolean_setting(value, default=False):
     return bool(value)
 
 
+def positive_integer_setting(value, default, maximum):
+    """Read a bounded positive integer from a dashboard setting."""
+    try:
+        if isinstance(value, bool):
+            raise TypeError
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+
+    return max(1, min(maximum, number))
+
+
 class BrainLabRuntime:
     """In-memory one-agent live brain run for one selected world."""
 
@@ -2738,6 +2878,8 @@ class BrainLabRuntime:
         training_time_ms=0,
         pass_threshold_percent=DEFAULT_FORECAST_PASS_PERCENT,
         auto_increase_level=False,
+        auto_increase_by=DEFAULT_AUTO_INCREASE_BY,
+        auto_increase_passes=DEFAULT_AUTO_INCREASE_PASSES,
     ):
         self.world_id = world_id
         self.world = world
@@ -2746,6 +2888,16 @@ class BrainLabRuntime:
         self.loop_interval_seconds = loop_interval_seconds
         self.pass_threshold_percent = clamp_percent(pass_threshold_percent)
         self.auto_increase_level = boolean_setting(auto_increase_level)
+        self.auto_increase_by = positive_integer_setting(
+            auto_increase_by,
+            DEFAULT_AUTO_INCREASE_BY,
+            MAX_FORECAST_LEVEL,
+        )
+        self.auto_increase_passes = positive_integer_setting(
+            auto_increase_passes,
+            DEFAULT_AUTO_INCREASE_PASSES,
+            MAX_AUTO_INCREASE_PASSES,
+        )
         self.running = False
         self.runner_thread = None
         self.training_time_ms = max(0, int(training_time_ms))
@@ -2764,6 +2916,7 @@ class BrainLabRuntime:
         self.last_grade = None
         self.last_step_accuracies = []
         self.target_reached = False
+        self.consecutive_passing_batches = 0
         self.unique_coordinates_seen = {coordinate_key(self.env.coordinate)}
         self.deposit_ids_seen = set()
         self.last_action = None
@@ -2804,6 +2957,7 @@ class BrainLabRuntime:
             raise RuntimeError("Pause training before changing the forecast level.")
 
         self.forecast_level = max(1, min(MAX_FORECAST_LEVEL, int(level)))
+        self.consecutive_passing_batches = 0
         self._start_new_batch(clear_grade=True)
 
     def _start_new_batch(self, clear_grade=False):
@@ -2837,20 +2991,44 @@ class BrainLabRuntime:
                 float(options["interval_ms"]) / 1000.0,
             )
         if "pass_threshold_percent" in options:
-            self.pass_threshold_percent = clamp_percent(
+            next_pass_threshold_percent = clamp_percent(
                 options["pass_threshold_percent"],
                 self.pass_threshold_percent,
             )
+            if next_pass_threshold_percent != self.pass_threshold_percent:
+                self.consecutive_passing_batches = 0
+            self.pass_threshold_percent = next_pass_threshold_percent
             if self.last_step_accuracies:
                 self.target_reached = all(
                     accuracy >= self.pass_threshold_percent
                     for accuracy in self.last_step_accuracies
                 )
         if "auto_increase_level" in options:
-            self.auto_increase_level = boolean_setting(
+            next_auto_increase_level = boolean_setting(
                 options["auto_increase_level"],
                 self.auto_increase_level,
             )
+            if next_auto_increase_level != self.auto_increase_level:
+                self.consecutive_passing_batches = 0
+            self.auto_increase_level = next_auto_increase_level
+        if "auto_increase_by" in options:
+            next_auto_increase_by = positive_integer_setting(
+                options["auto_increase_by"],
+                self.auto_increase_by,
+                MAX_FORECAST_LEVEL,
+            )
+            if next_auto_increase_by != self.auto_increase_by:
+                self.consecutive_passing_batches = 0
+            self.auto_increase_by = next_auto_increase_by
+        if "auto_increase_passes" in options:
+            next_auto_increase_passes = positive_integer_setting(
+                options["auto_increase_passes"],
+                self.auto_increase_passes,
+                MAX_AUTO_INCREASE_PASSES,
+            )
+            if next_auto_increase_passes != self.auto_increase_passes:
+                self.consecutive_passing_batches = 0
+            self.auto_increase_passes = next_auto_increase_passes
 
     def _generate_actions(self):
         """Create one complete legal path before any movement is executed.
@@ -2902,24 +3080,32 @@ class BrainLabRuntime:
         # means every step position, not only an average, reached the target.
         self.last_grade = min(step_accuracies, default=0.0)
         self.completed_batches += 1
-        self.target_reached = all(
+        batch_passed = all(
             accuracy >= self.pass_threshold_percent for accuracy in step_accuracies
         )
+        self.target_reached = batch_passed
 
         if (
-            self.target_reached
+            batch_passed
             and self.auto_increase_level
             and self.forecast_level < MAX_FORECAST_LEVEL
         ):
-            self.forecast_level += 1
+            self.consecutive_passing_batches += 1
+            if self.consecutive_passing_batches >= self.auto_increase_passes:
+                self.forecast_level = min(
+                    MAX_FORECAST_LEVEL,
+                    self.forecast_level + self.auto_increase_by,
+                )
+                self.consecutive_passing_batches = 0
             self._start_new_batch(clear_grade=False)
-        elif self.target_reached:
+        elif batch_passed:
             # The background manager notices this and persists elapsed time.
             self.running = False
         else:
+            self.consecutive_passing_batches = 0
             self._start_new_batch(clear_grade=False)
 
-        return self.target_reached
+        return batch_passed
 
     def step_once(self):
         """Forecast and execute one full blind path trial at the chosen level."""
@@ -2995,6 +3181,9 @@ class BrainLabRuntime:
             "last_step_accuracies": self.last_step_accuracies,
             "pass_threshold_percent": self.pass_threshold_percent,
             "auto_increase_level": self.auto_increase_level,
+            "auto_increase_by": self.auto_increase_by,
+            "auto_increase_passes": self.auto_increase_passes,
+            "consecutive_passing_batches": self.consecutive_passing_batches,
             "target_reached": self.target_reached,
             "coordinate": self.env.coordinate,
             "step_size": self.step_size,
@@ -3034,6 +3223,9 @@ def inactive_brain_payload(world_id, training_time_ms):
         "last_step_accuracies": [],
         "pass_threshold_percent": DEFAULT_FORECAST_PASS_PERCENT,
         "auto_increase_level": False,
+        "auto_increase_by": DEFAULT_AUTO_INCREASE_BY,
+        "auto_increase_passes": DEFAULT_AUTO_INCREASE_PASSES,
+        "consecutive_passing_batches": 0,
         "target_reached": False,
     }
 
@@ -3089,6 +3281,14 @@ class BrainLabManager:
                     DEFAULT_FORECAST_PASS_PERCENT,
                 ),
                 auto_increase_level=options.get("auto_increase_level", False),
+                auto_increase_by=options.get(
+                    "auto_increase_by",
+                    DEFAULT_AUTO_INCREASE_BY,
+                ),
+                auto_increase_passes=options.get(
+                    "auto_increase_passes",
+                    DEFAULT_AUTO_INCREASE_PASSES,
+                ),
             )
             self.runtimes[selected_world_id] = runtime
             return runtime

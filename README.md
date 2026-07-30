@@ -159,8 +159,10 @@ paths.
 The dashboard records a grade only after the full batch completes; the grade is
 the lowest per-step accuracy, so every step position must reach the selected
 threshold before the batch succeeds and training stops. When Auto Increase
-Length is enabled, a passing batch instead advances to the next forecast length
-and continues. The predictor is
+Length is enabled, its `by` and `every ... passes` fields control a consecutive
+passing-batch gate: by default, the forecast length increases by 1 only after
+100 passing batches in a row. A non-passing batch resets that streak, so one
+successful batch cannot advance the length on its own. The predictor is
 deliberately frozen for now, so it will not improve until weight-update rules
 are designed and implemented.
 
