@@ -486,35 +486,12 @@ HTML_PAGE = r"""<!doctype html>
       font-size: 13px;
     }
 
-    .training-value {
-      overflow: hidden;
-      color: var(--text);
-      font-size: 30px;
-      font-weight: 800;
-      line-height: 1;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .training-label {
-      margin-top: 8px;
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 650;
-    }
-
-    .training-status {
-      margin-top: 14px;
-      color: var(--muted);
-      font-size: 12px;
-    }
-
     .training-level-control {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      margin-top: 12px;
+      margin-top: 0;
       color: var(--muted);
       font-size: 12px;
       font-weight: 700;
@@ -555,11 +532,35 @@ HTML_PAGE = r"""<!doctype html>
       stroke-width: 2.25;
     }
 
-    .level-value {
-      min-width: 30px;
+    .level-stepper input {
+      width: 46px;
+      height: 24px;
+      padding: 0 5px;
       color: var(--text);
+      background: #ffffff;
+      border: 1px solid var(--panel-border);
+      border-radius: 6px;
+      font: inherit;
       font-variant-numeric: tabular-nums;
       text-align: center;
+      appearance: textfield;
+      -moz-appearance: textfield;
+    }
+
+    .level-stepper input::-webkit-inner-spin-button,
+    .level-stepper input::-webkit-outer-spin-button {
+      margin: 0;
+      -webkit-appearance: none;
+    }
+
+    .level-stepper input:focus {
+      outline: 2px solid rgba(9, 105, 218, 0.2);
+      border-color: var(--accent);
+    }
+
+    .level-stepper input:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
     }
 
     .training-console-controls {
@@ -578,107 +579,100 @@ HTML_PAGE = r"""<!doctype html>
       font-weight: 700;
     }
 
-    .console-setting input {
-      width: 72px;
-      height: 28px;
-      padding: 0 8px;
-      color: var(--text);
-      background: #ffffff;
+    .console-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .console-toggle input {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+    }
+
+    .toggle-track {
+      position: relative;
+      width: 34px;
+      height: 20px;
+      flex: 0 0 auto;
       border: 1px solid var(--panel-border);
-      border-radius: 8px;
-      font: inherit;
-      font-variant-numeric: tabular-nums;
-      text-align: right;
+      border-radius: 999px;
+      background: #d8dee4;
+      cursor: pointer;
+      transition: background 140ms ease, border-color 140ms ease;
     }
 
-    .console-setting input:focus {
-      outline: 2px solid rgba(9, 105, 218, 0.2);
+    .toggle-track::after {
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #ffffff;
+      content: "";
+      transition: transform 140ms ease;
+    }
+
+    .console-toggle input:checked + .toggle-track {
       border-color: var(--accent);
+      background: var(--accent);
     }
 
-    .console-setting input:disabled {
+    .console-toggle input:checked + .toggle-track::after {
+      transform: translateX(14px);
+    }
+
+    .console-toggle input:focus-visible + .toggle-track {
+      outline: 2px solid rgba(9, 105, 218, 0.25);
+      outline-offset: 2px;
+    }
+
+    .console-toggle input:disabled + .toggle-track {
       cursor: not-allowed;
-      opacity: 0.6;
+      opacity: 0.55;
     }
 
     .training-metrics {
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
+      grid-template-columns: 1fr;
       margin-top: 12px;
+      border-top: 1px solid var(--panel-border);
     }
 
     .metric-cell {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
       min-width: 0;
-      padding: 8px;
-      background: rgba(246, 248, 250, 0.86);
-      border: 1px solid #d8dee4;
-      border-radius: 10px;
+      padding: 9px 0;
+      border-bottom: 1px solid rgba(208, 215, 222, 0.7);
     }
 
     .metric-label {
-      display: block;
+      display: inline;
       color: var(--muted);
-      font-size: 10px;
+      font-size: 12px;
       font-weight: 700;
-      text-transform: uppercase;
+      text-transform: none;
     }
 
     .metric-value {
-      display: block;
-      margin-top: 3px;
+      display: inline;
+      margin-top: 0;
       overflow: hidden;
       color: var(--text);
-      font-size: 12px;
+      font-size: 13px;
       font-weight: 750;
       text-overflow: ellipsis;
       white-space: nowrap;
-    }
-
-    .training-log {
-      flex: 1;
-      min-height: 0;
-      margin-top: 12px;
-      overflow-y: auto;
-      border-top: 1px solid var(--panel-border);
-      padding-top: 8px;
-      color: var(--muted);
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 11px;
-      line-height: 1.45;
-    }
-
-    .console-heading {
-      margin: 2px 0 5px;
-      color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      font-size: 11px;
-      font-weight: 750;
-    }
-
-    .console-row {
-      display: flex;
-      justify-content: space-between;
-      gap: 10px;
-      padding: 3px 0;
-      border-bottom: 1px solid rgba(208, 215, 222, 0.5);
-    }
-
-    .console-row:last-child {
-      border-bottom: 0;
-    }
-
-    .console-row .console-value {
-      color: var(--text);
-      font-variant-numeric: tabular-nums;
-    }
-
-    .console-pass {
-      color: #1a7f37;
-    }
-
-    .console-fail {
-      color: var(--danger);
     }
 
     #legend {
@@ -1107,30 +1101,39 @@ HTML_PAGE = r"""<!doctype html>
   </header>
 
   <div id="trainingInfo" class="panel">
-    <h2>Training Info</h2>
-    <div id="trainingIterations" class="training-value">0</div>
-    <div class="training-label">iterations</div>
-    <div id="trainingStatus" class="training-status">Paused</div>
+    <h2>Training Console</h2>
     <div class="training-level-control">
-      <span>Forecast level</span>
+      <span>Forecast Length</span>
       <div class="level-stepper">
-        <button id="decreaseForecastLevel" type="button" aria-label="Decrease forecast level" title="Decrease forecast level">
+        <button id="decreaseForecastLevel" type="button" aria-label="Decrease forecast length" title="Decrease forecast length">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M5 12h14"></path></svg>
         </button>
-        <span id="forecastLevelValue" class="level-value">1</span>
-        <button id="increaseForecastLevel" type="button" aria-label="Increase forecast level" title="Increase forecast level">
+        <input id="forecastLevelInput" type="number" min="1" max="100" step="1" value="1" inputmode="numeric" aria-label="Forecast length" />
+        <button id="increaseForecastLevel" type="button" aria-label="Increase forecast length" title="Increase forecast length">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>
         </button>
       </div>
     </div>
     <div class="training-console-controls">
-      <label class="console-setting" for="passThresholdInput">
-        <span>Pass threshold</span>
-        <input id="passThresholdInput" type="number" min="0" max="100" step="1" value="90" inputmode="numeric" />
+      <label class="console-setting" for="passGradeInput">
+        <span>Pass Grade</span>
+        <span class="level-stepper">
+          <button id="decreasePassGrade" type="button" aria-label="Decrease pass grade" title="Decrease pass grade">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M5 12h14"></path></svg>
+          </button>
+          <input id="passGradeInput" type="number" min="0" max="100" step="1" value="90" inputmode="numeric" aria-label="Pass Grade" />
+          <button id="increasePassGrade" type="button" aria-label="Increase pass grade" title="Increase pass grade">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>
+          </button>
+        </span>
+      </label>
+      <label class="console-toggle" for="autoIncreaseLevelInput">
+        <span>Auto Increase Length</span>
+        <input id="autoIncreaseLevelInput" type="checkbox" role="switch" />
+        <span class="toggle-track" aria-hidden="true"></span>
       </label>
     </div>
     <div id="trainingMetrics" class="training-metrics"></div>
-    <div id="trainingLog" class="training-log"></div>
   </div>
 
   <div id="legend" class="panel">
@@ -1179,14 +1182,14 @@ HTML_PAGE = r"""<!doctype html>
     const trainingInfoPanel = document.getElementById("trainingInfo");
     const legendPanel = document.getElementById("legend");
     const detailsPanel = document.getElementById("details");
-    const trainingIterations = document.getElementById("trainingIterations");
-    const trainingStatus = document.getElementById("trainingStatus");
     const trainingMetrics = document.getElementById("trainingMetrics");
-    const trainingLog = document.getElementById("trainingLog");
     const decreaseForecastLevelButton = document.getElementById("decreaseForecastLevel");
     const increaseForecastLevelButton = document.getElementById("increaseForecastLevel");
-    const forecastLevelValue = document.getElementById("forecastLevelValue");
-    const passThresholdInput = document.getElementById("passThresholdInput");
+    const forecastLevelInput = document.getElementById("forecastLevelInput");
+    const decreasePassGradeButton = document.getElementById("decreasePassGrade");
+    const increasePassGradeButton = document.getElementById("increasePassGrade");
+    const passGradeInput = document.getElementById("passGradeInput");
+    const autoIncreaseLevelInput = document.getElementById("autoIncreaseLevelInput");
     const resetButton = document.getElementById("reset");
     const refreshButton = document.getElementById("refresh");
     const playBrainButton = document.getElementById("playBrain");
@@ -1255,10 +1258,10 @@ HTML_PAGE = r"""<!doctype html>
       batchStepCorrect: [0],
       batchStepTotal: [0],
       lastGrade: null,
-      lastOverallAccuracy: null,
       lastStepAccuracies: [],
       passThresholdPercent: 90,
       targetReached: false,
+      autoIncreaseLevel: false,
       brainStepSize: null,
       brainStepsPerTick: 1,
       brainServerIntervalMs: 10,
@@ -1400,71 +1403,36 @@ HTML_PAGE = r"""<!doctype html>
       return Math.max(0, Math.min(100, Math.round(number * 10) / 10));
     }
 
+    function clampForecastLevel(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return state.forecastLevel;
+      return Math.max(1, Math.min(100, Math.floor(number)));
+    }
+
     function syncTrainingInputs() {
-      if (document.activeElement !== passThresholdInput) {
-        passThresholdInput.value = String(state.passThresholdPercent);
+      if (document.activeElement !== forecastLevelInput) {
+        forecastLevelInput.value = String(state.forecastLevel);
       }
+      if (document.activeElement !== passGradeInput) {
+        passGradeInput.value = String(state.passThresholdPercent);
+      }
+      autoIncreaseLevelInput.checked = state.autoIncreaseLevel;
     }
 
     function renderTrainingInfo() {
-      const stepSize = state.brainStepSize
-        ? state.brainStepSize.toLocaleString()
-        : defaultBrainStepSize().toLocaleString();
       const hasGrade = Number.isFinite(state.lastGrade);
       const grade = hasGrade ? `${state.lastGrade.toFixed(1)}%` : "n/a";
-      const overall = Number.isFinite(state.lastOverallAccuracy)
-        ? `${state.lastOverallAccuracy.toFixed(1)}%`
-        : "n/a";
-      const liveStepAccuracies = state.batchStepTotal.map((total, index) => {
-        const correct = state.batchStepCorrect[index] || 0;
-        return total ? (correct / total) * 100 : null;
-      });
 
-      trainingIterations.textContent = state.brainIterations.toLocaleString();
-      forecastLevelValue.textContent = state.forecastLevel.toLocaleString();
       syncTrainingInputs();
-      trainingStatus.textContent = state.targetReached
-        ? "Target reached: training stopped"
-        : state.brainRunning
-          ? "Running 100-path forecast batches"
-          : "Paused";
       trainingMetrics.innerHTML = [
-        ["batch", `${state.batchPathsCompleted}/${state.batchSize}`],
-        ["last grade", grade],
-        ["overall", overall],
-        ["threshold", `${state.passThresholdPercent}% / step`],
-        ["paths", state.pathTrials.toLocaleString()],
-        ["batches", state.completedBatches.toLocaleString()],
-        ["step size", stepSize],
+        ["Batch", `${state.batchPathsCompleted}/${state.batchSize}`],
+        ["Grade", grade],
       ]
         .map(([label, value]) => `<div class="metric-cell">
           <span class="metric-label">${escapeHtml(label)}</span>
           <span class="metric-value">${escapeHtml(value)}</span>
         </div>`)
         .join("");
-
-      const completedRows = state.lastStepAccuracies.map((accuracy, index) => {
-        const passed = accuracy >= state.passThresholdPercent;
-        return `<div class="console-row">
-          <span>last step ${String(index + 1).padStart(2, "0")}</span>
-          <span class="console-value ${passed ? "console-pass" : "console-fail"}">${accuracy.toFixed(1)}%</span>
-        </div>`;
-      }).join("");
-      const liveRows = liveStepAccuracies.map((accuracy, index) => {
-        const correct = state.batchStepCorrect[index] || 0;
-        const total = state.batchStepTotal[index] || 0;
-        const display = accuracy === null ? "waiting" : `${correct}/${total} · ${accuracy.toFixed(1)}%`;
-        return `<div class="console-row">
-          <span>current step ${String(index + 1).padStart(2, "0")}</span>
-          <span class="console-value">${display}</span>
-        </div>`;
-      }).join("");
-
-      trainingLog.innerHTML = [
-        hasGrade ? `<div class="console-heading">Last completed batch</div>${completedRows}` : "",
-        `<div class="console-heading">Current batch</div>${liveRows}`,
-        `<div class="console-row"><span>rule</span><span class="console-value">each step >= ${state.passThresholdPercent}%</span></div>`,
-      ].join("");
       layoutRightPanels();
     }
 
@@ -1959,7 +1927,11 @@ HTML_PAGE = r"""<!doctype html>
       pauseBrainButton.disabled = !hasWorld;
       decreaseForecastLevelButton.disabled = !hasWorld || state.brainRunning || state.forecastLevel <= 1;
       increaseForecastLevelButton.disabled = !hasWorld || state.brainRunning;
-      passThresholdInput.disabled = !hasWorld;
+      forecastLevelInput.disabled = !hasWorld || state.brainRunning;
+      passGradeInput.disabled = !hasWorld;
+      decreasePassGradeButton.disabled = !hasWorld || state.passThresholdPercent <= 0;
+      increasePassGradeButton.disabled = !hasWorld || state.passThresholdPercent >= 100;
+      autoIncreaseLevelInput.disabled = !hasWorld;
       playBrainButton.classList.toggle("is-active", state.brainRunning);
       pauseBrainButton.classList.toggle("is-active", hasWorld && !state.brainRunning);
     }
@@ -2005,9 +1977,6 @@ HTML_PAGE = r"""<!doctype html>
       state.lastGrade = Number.isFinite(Number(brain?.last_grade))
         ? Number(brain.last_grade)
         : null;
-      state.lastOverallAccuracy = Number.isFinite(Number(brain?.last_overall_accuracy))
-        ? Number(brain.last_overall_accuracy)
-        : null;
       state.lastStepAccuracies = Array.isArray(brain?.last_step_accuracies)
         ? brain.last_step_accuracies
         : [];
@@ -2015,6 +1984,7 @@ HTML_PAGE = r"""<!doctype html>
         ? Number(brain.pass_threshold_percent)
         : 90;
       state.targetReached = Boolean(brain?.target_reached);
+      state.autoIncreaseLevel = Boolean(brain?.auto_increase_level);
       if (Number.isFinite(Number(brain?.step_size))) {
         state.brainStepSize = Math.max(1, Math.floor(Number(brain.step_size)));
       }
@@ -2116,6 +2086,7 @@ HTML_PAGE = r"""<!doctype html>
           steps_per_tick: state.brainStepsPerTick,
           interval_ms: state.brainServerIntervalMs,
           pass_threshold_percent: state.passThresholdPercent,
+          auto_increase_level: state.autoIncreaseLevel,
         }),
       });
 
@@ -2154,6 +2125,7 @@ HTML_PAGE = r"""<!doctype html>
           step_size: state.brainStepSize || defaultBrainStepSize(),
           steps: state.brainStepsPerTick,
           pass_threshold_percent: state.passThresholdPercent,
+          auto_increase_level: state.autoIncreaseLevel,
         }),
       });
 
@@ -2165,10 +2137,10 @@ HTML_PAGE = r"""<!doctype html>
       requestDraw();
     }
 
-    async function changeForecastLevel(delta) {
+    async function setForecastLevel(level) {
       if (!state.selectedWorldId || state.brainRunning) return;
 
-      const nextLevel = Math.max(1, state.forecastLevel + delta);
+      const nextLevel = clampForecastLevel(level);
       const data = await apiJson("/api/brain/level", {
         method: "POST",
         body: JSON.stringify({
@@ -2178,6 +2150,7 @@ HTML_PAGE = r"""<!doctype html>
           steps_per_tick: state.brainStepsPerTick,
           interval_ms: state.brainServerIntervalMs,
           pass_threshold_percent: state.passThresholdPercent,
+          auto_increase_level: state.autoIncreaseLevel,
         }),
       });
 
@@ -2187,6 +2160,22 @@ HTML_PAGE = r"""<!doctype html>
       setBrainState(data.brain);
       refreshSelectedNodeFromWorld();
       requestDraw();
+    }
+
+    async function changeForecastLevel(delta) {
+      return setForecastLevel(state.forecastLevel + delta);
+    }
+
+    async function setPassGrade(grade) {
+      state.passThresholdPercent = clampPassThreshold(grade);
+      syncTrainingInputs();
+      renderBrainStatus();
+      renderTrainingInfo();
+      await updateBrainSettings();
+    }
+
+    async function changePassGrade(delta) {
+      return setPassGrade(state.passThresholdPercent + delta);
     }
 
     async function updateBrainSettings() {
@@ -2206,6 +2195,7 @@ HTML_PAGE = r"""<!doctype html>
           steps_per_tick: state.brainStepsPerTick,
           interval_ms: state.brainServerIntervalMs,
           pass_threshold_percent: state.passThresholdPercent,
+          auto_increase_level: state.autoIncreaseLevel,
         }),
       });
 
@@ -2439,13 +2429,32 @@ HTML_PAGE = r"""<!doctype html>
         showLoading(error.message);
       });
     });
-    passThresholdInput.addEventListener("input", () => {
-      state.passThresholdPercent = clampPassThreshold(passThresholdInput.value);
+    decreasePassGradeButton.addEventListener("click", () => {
+      changePassGrade(-1).catch((error) => {
+        showLoading(error.message);
+      });
+    });
+    increasePassGradeButton.addEventListener("click", () => {
+      changePassGrade(1).catch((error) => {
+        showLoading(error.message);
+      });
+    });
+    forecastLevelInput.addEventListener("change", () => {
+      setForecastLevel(forecastLevelInput.value).catch((error) => {
+        showLoading(error.message);
+      });
+    });
+    passGradeInput.addEventListener("input", () => {
+      state.passThresholdPercent = clampPassThreshold(passGradeInput.value);
       renderTrainingInfo();
     });
-    passThresholdInput.addEventListener("change", () => {
-      state.passThresholdPercent = clampPassThreshold(passThresholdInput.value);
-      syncTrainingInputs();
+    passGradeInput.addEventListener("change", () => {
+      setPassGrade(passGradeInput.value).catch((error) => {
+        showLoading(error.message);
+      });
+    });
+    autoIncreaseLevelInput.addEventListener("change", () => {
+      state.autoIncreaseLevel = autoIncreaseLevelInput.checked;
       updateBrainSettings().catch((error) => {
         showLoading(error.message);
       });
@@ -2702,6 +2711,17 @@ def clamp_percent(value, default=DEFAULT_FORECAST_PASS_PERCENT):
     return max(0.0, min(100.0, number))
 
 
+def boolean_setting(value, default=False):
+    """Read a JSON boolean without treating the string 'false' as true."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 class BrainLabRuntime:
     """In-memory one-agent live brain run for one selected world."""
 
@@ -2717,6 +2737,7 @@ class BrainLabRuntime:
         loop_interval_seconds=0.01,
         training_time_ms=0,
         pass_threshold_percent=DEFAULT_FORECAST_PASS_PERCENT,
+        auto_increase_level=False,
     ):
         self.world_id = world_id
         self.world = world
@@ -2724,6 +2745,7 @@ class BrainLabRuntime:
         self.steps_per_tick = steps_per_tick
         self.loop_interval_seconds = loop_interval_seconds
         self.pass_threshold_percent = clamp_percent(pass_threshold_percent)
+        self.auto_increase_level = boolean_setting(auto_increase_level)
         self.running = False
         self.runner_thread = None
         self.training_time_ms = max(0, int(training_time_ms))
@@ -2740,7 +2762,6 @@ class BrainLabRuntime:
         self.batch_step_total = [0]
         self.batch_path_keys = set()
         self.last_grade = None
-        self.last_overall_accuracy = None
         self.last_step_accuracies = []
         self.target_reached = False
         self.unique_coordinates_seen = {coordinate_key(self.env.coordinate)}
@@ -2794,7 +2815,6 @@ class BrainLabRuntime:
         self.target_reached = False
         if clear_grade:
             self.last_grade = None
-            self.last_overall_accuracy = None
             self.last_step_accuracies = []
 
     def apply_settings(self, options=None):
@@ -2826,6 +2846,11 @@ class BrainLabRuntime:
                     accuracy >= self.pass_threshold_percent
                     for accuracy in self.last_step_accuracies
                 )
+        if "auto_increase_level" in options:
+            self.auto_increase_level = boolean_setting(
+                options["auto_increase_level"],
+                self.auto_increase_level,
+            )
 
     def _generate_actions(self):
         """Create one complete legal path before any movement is executed.
@@ -2872,13 +2897,7 @@ class BrainLabRuntime:
             (correct / total) * 100 if total else 0.0
             for correct, total in zip(self.batch_step_correct, self.batch_step_total)
         ]
-        total_correct = sum(self.batch_step_correct)
-        total_predictions = sum(self.batch_step_total)
-
         self.last_step_accuracies = step_accuracies
-        self.last_overall_accuracy = (
-            (total_correct / total_predictions) * 100 if total_predictions else 0.0
-        )
         # The grade is the weakest position in the path. Passing therefore
         # means every step position, not only an average, reached the target.
         self.last_grade = min(step_accuracies, default=0.0)
@@ -2887,7 +2906,14 @@ class BrainLabRuntime:
             accuracy >= self.pass_threshold_percent for accuracy in step_accuracies
         )
 
-        if self.target_reached:
+        if (
+            self.target_reached
+            and self.auto_increase_level
+            and self.forecast_level < MAX_FORECAST_LEVEL
+        ):
+            self.forecast_level += 1
+            self._start_new_batch(clear_grade=False)
+        elif self.target_reached:
             # The background manager notices this and persists elapsed time.
             self.running = False
         else:
@@ -2966,9 +2992,9 @@ class BrainLabRuntime:
             "batch_step_correct": self.batch_step_correct,
             "batch_step_total": self.batch_step_total,
             "last_grade": self.last_grade,
-            "last_overall_accuracy": self.last_overall_accuracy,
             "last_step_accuracies": self.last_step_accuracies,
             "pass_threshold_percent": self.pass_threshold_percent,
+            "auto_increase_level": self.auto_increase_level,
             "target_reached": self.target_reached,
             "coordinate": self.env.coordinate,
             "step_size": self.step_size,
@@ -3005,9 +3031,9 @@ def inactive_brain_payload(world_id, training_time_ms):
         "batch_step_correct": [0],
         "batch_step_total": [0],
         "last_grade": None,
-        "last_overall_accuracy": None,
         "last_step_accuracies": [],
         "pass_threshold_percent": DEFAULT_FORECAST_PASS_PERCENT,
+        "auto_increase_level": False,
         "target_reached": False,
     }
 
@@ -3062,6 +3088,7 @@ class BrainLabManager:
                     "pass_threshold_percent",
                     DEFAULT_FORECAST_PASS_PERCENT,
                 ),
+                auto_increase_level=options.get("auto_increase_level", False),
             )
             self.runtimes[selected_world_id] = runtime
             return runtime

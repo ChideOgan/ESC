@@ -80,7 +80,7 @@ Implemented so far:
 - canvas visualization with pan, zoom, hover, click, legend, and selected-node details
 - experimental one-agent brain lab with blind random path forecasts
 - static surface-code prediction shell that predicts every step of a path before movement reveals any answer
-- fixed 100-path grading batches with selectable forecast horizon and pass-threshold controls
+- fixed 100-path grading batches with selectable forecast horizon, pass-grade controls, and optional automatic level increases
 - cumulative per-world training-time tracking in `worlds_index.json`
 
 The world still has no mining, trade, pricing, production, messaging, route planning, firm formation, or LLM agent behavior.
@@ -152,12 +152,15 @@ running and the Mac is awake.
 When the brain is paused, the dashboard saves cumulative elapsed training time
 for that world in `worlds_index.json`.
 
-The Training Info panel works like the current-run console. It lets you select
-a forecast level, adjust the per-step pass threshold, and inspect the current
-batch plus the most recent completed batch. Each batch contains 100 blind paths.
+The Training Console lets you select or type a Forecast Length and adjust the
+per-step Pass Grade with matching minus/input/plus controls. It shows only the
+current batch progress and its most recent Grade. Each batch contains 100 blind
+paths.
 The dashboard records a grade only after the full batch completes; the grade is
 the lowest per-step accuracy, so every step position must reach the selected
-threshold before the batch succeeds and training stops. The predictor is
+threshold before the batch succeeds and training stops. When Auto Increase
+Length is enabled, a passing batch instead advances to the next forecast length
+and continues. The predictor is
 deliberately frozen for now, so it will not improve until weight-update rules
 are designed and implemented.
 
