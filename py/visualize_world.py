@@ -1298,6 +1298,7 @@ HTML_PAGE = r"""<!doctype html>
       dragOffsetY: 0,
       hoverNode: null,
       selectedNode: null,
+      followedAgentId: null,
       pendingDeleteWorldId: null,
       brainActive: false,
       brainRunning: false,
@@ -1376,7 +1377,11 @@ HTML_PAGE = r"""<!doctype html>
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       layoutRightPanels();
       if (state.world) {
-        fitWorldToScreen();
+        if (state.followedAgentId) {
+          followSelectedAgent();
+        } else {
+          fitWorldToScreen();
+        }
       }
       requestDraw();
     }
@@ -1425,7 +1430,10 @@ HTML_PAGE = r"""<!doctype html>
 
       state.scale = Math.max(0.0001, Math.min(scaleX, scaleY));
       state.minScale = state.scale * 0.4;
-      state.maxScale = state.scale * 800;
+      // At the closest zoom, one world coordinate needs enough screen space
+      // for a readable label. This makes the surface tile size reach 1 by 1,
+      // where the displayed average is necessarily the exact integer value.
+      state.maxScale = Math.max(state.scale * 800, 60);
       state.offsetX =
         viewport.left + (viewport.width - metadata.world_width * state.scale) / 2;
       state.offsetY =
@@ -1565,10 +1573,39 @@ HTML_PAGE = r"""<!doctype html>
     }
 
     function defaultBrainStepSize() {
-      if (!state.world) return 1;
-      const metadata = state.world.metadata;
-      const smallestDimension = Math.min(metadata.world_width, metadata.world_height);
-      return Math.max(1, Math.round(smallestDimension / 225));
+      return 1;
+    }
+
+    function stopFollowingAgent() {
+      state.followedAgentId = null;
+    }
+
+    function centerCoordinateInViewport(coordinate) {
+      const viewport = fitViewport();
+      const centerX = viewport.left + (viewport.width / 2);
+      const centerY = viewport.top + (viewport.height / 2);
+      state.offsetX = centerX - (coordinate[0] * state.scale);
+      state.offsetY = centerY - (coordinate[1] * state.scale);
+    }
+
+    function startFollowingAgent(agent) {
+      if (!agent || agent.type !== "agent") return;
+
+      state.followedAgentId = agent.id;
+      state.scale = state.maxScale;
+      centerCoordinateInViewport(agent.coordinate);
+    }
+
+    function followSelectedAgent() {
+      if (!state.followedAgentId || !state.world) return;
+
+      const agent = state.world.agents?.[state.followedAgentId];
+      if (!agent) {
+        stopFollowingAgent();
+        return;
+      }
+
+      centerCoordinateInViewport(agent.coordinate);
     }
 
     function requestDraw() {
@@ -1589,6 +1626,7 @@ HTML_PAGE = r"""<!doctype html>
 
       if (!state.world) return;
 
+      drawSurfaceAverages();
       drawMapBounds();
       drawDeposits();
       drawMachines();
@@ -1628,6 +1666,192 @@ HTML_PAGE = r"""<!doctype html>
         point.y >= -radius &&
         point.y <= canvas.clientHeight + radius
       );
+    }
+
+    function deterministicHash(seed, x, y, salt = 0) {
+      // This mirrors world_generator.deterministic_hash(), including its
+      // unsigned 32-bit integer behavior, so the canvas never needs to store
+      // or request a surface value for a coordinate.
+      let value = (
+        Math.imul(Number(seed), 374761393) +
+        Math.imul(x, 668265263) +
+        Math.imul(y, 2147483647) +
+        Math.imul(salt, 1274126177)
+      ) >>> 0;
+      value ^= value >>> 13;
+      value = Math.imul(value, 1274126177) >>> 0;
+      value ^= value >>> 16;
+      return value >>> 0;
+    }
+
+    function deterministicUnitNoise(seed, x, y, salt = 0) {
+      return deterministicHash(seed, x, y, salt) / 0xffffffff;
+    }
+
+    function smoothstep(value) {
+      return value * value * (3 - (2 * value));
+    }
+
+    function lerp(start, end, amount) {
+      return start + ((end - start) * amount);
+    }
+
+    function smoothNoise(seed, x, y, scale, salt = 0) {
+      const scaledX = x / scale;
+      const scaledY = y / scale;
+      const x0 = Math.floor(scaledX);
+      const y0 = Math.floor(scaledY);
+      const x1 = x0 + 1;
+      const y1 = y0 + 1;
+      const tx = smoothstep(scaledX - x0);
+      const ty = smoothstep(scaledY - y0);
+      const top = lerp(
+        deterministicUnitNoise(seed, x0, y0, salt),
+        deterministicUnitNoise(seed, x1, y0, salt),
+        tx,
+      );
+      const bottom = lerp(
+        deterministicUnitNoise(seed, x0, y1, salt),
+        deterministicUnitNoise(seed, x1, y1, salt),
+        tx,
+      );
+      return lerp(top, bottom, ty);
+    }
+
+    function surfaceCodeAtCoordinate(metadata, x, y) {
+      const chaosLevel = Number(metadata.chaos_level ?? 0.5);
+      const broad = smoothNoise(metadata.seed, x, y, 8192, 11);
+      const medium = smoothNoise(metadata.seed, x, y, 1024, 23);
+      const structuredValue = (0.65 * broad) + (0.35 * medium);
+      const chaoticValue = deterministicUnitNoise(metadata.seed, x, y, 97);
+      const value = ((1 - chaosLevel) * structuredValue) + (chaosLevel * chaoticValue);
+      return Math.min(Number(metadata.surface_code_count ?? 10) - 1, Math.floor(value * Number(metadata.surface_code_count ?? 10)));
+    }
+
+    function isInsideWorld(metadata, x, y) {
+      if (metadata.world_shape !== "circle") {
+        return x >= 0 && x < metadata.world_width && y >= 0 && y < metadata.world_height;
+      }
+
+      const [centerX, centerY] = metadata.world_center;
+      const dx = x - centerX;
+      const dy = y - centerY;
+      return (dx * dx) + (dy * dy) <= metadata.world_radius * metadata.world_radius;
+    }
+
+    function niceSampleStep(targetStep) {
+      const exponent = Math.floor(Math.log10(Math.max(1, targetStep)));
+      const magnitude = 10 ** exponent;
+      const normalized = targetStep / magnitude;
+      const multiplier = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+      return Math.max(1, Math.round(multiplier * magnitude));
+    }
+
+    function averageSurfaceCodeInTile(metadata, startX, startY, endX, endY) {
+      const width = endX - startX;
+      const height = endY - startY;
+      const samplesX = Math.min(5, width);
+      const samplesY = Math.min(5, height);
+      let total = 0;
+      let count = 0;
+      let totalX = 0;
+      let totalY = 0;
+
+      // A fixed, evenly distributed sample keeps large world tiles cheap to
+      // render. When a tile is 5 by 5 coordinates or smaller, every cell is
+      // included and the displayed average is exact.
+      for (let sampleX = 0; sampleX < samplesX; sampleX += 1) {
+        const x = Math.min(
+          endX - 1,
+          Math.floor(startX + (((sampleX + 0.5) * width) / samplesX)),
+        );
+        for (let sampleY = 0; sampleY < samplesY; sampleY += 1) {
+          const y = Math.min(
+            endY - 1,
+            Math.floor(startY + (((sampleY + 0.5) * height) / samplesY)),
+          );
+          if (!isInsideWorld(metadata, x, y)) continue;
+          total += surfaceCodeAtCoordinate(metadata, x, y);
+          count += 1;
+          totalX += x;
+          totalY += y;
+        }
+      }
+
+      return count === 0
+        ? null
+        : {
+            value: total / count,
+            centerX: totalX / count,
+            centerY: totalY / count,
+          };
+    }
+
+    function formatSurfaceAverage(average, width, height) {
+      return width === 1 && height === 1
+        ? String(Math.round(average))
+        : average.toFixed(1);
+    }
+
+    function insetLabelPoint(metadata, x, y, paddingPixels = 28) {
+      if (metadata.world_shape !== "circle") return [x, y];
+
+      const [centerX, centerY] = metadata.world_center;
+      const dx = x - centerX;
+      const dy = y - centerY;
+      const distance = Math.hypot(dx, dy);
+      const insetRadius = Math.max(
+        0,
+        metadata.world_radius - (paddingPixels / state.scale),
+      );
+
+      if (distance <= insetRadius || distance === 0) return [x, y];
+
+      const scale = insetRadius / distance;
+      return [centerX + (dx * scale), centerY + (dy * scale)];
+    }
+
+    function drawSurfaceAverages() {
+      const metadata = state.world.metadata;
+      const topLeft = screenToWorld(0, 0);
+      const bottomRight = screenToWorld(canvas.clientWidth, canvas.clientHeight);
+      const minX = Math.max(0, Math.floor(Math.min(topLeft.x, bottomRight.x)));
+      const maxX = Math.min(metadata.world_width - 1, Math.ceil(Math.max(topLeft.x, bottomRight.x)));
+      const minY = Math.max(0, Math.floor(Math.min(topLeft.y, bottomRight.y)));
+      const maxY = Math.min(metadata.world_height - 1, Math.ceil(Math.max(topLeft.y, bottomRight.y)));
+      const sampleStep = niceSampleStep(54 / state.scale);
+      const startX = Math.floor(minX / sampleStep) * sampleStep;
+      const startY = Math.floor(minY / sampleStep) * sampleStep;
+
+      ctx.save();
+      ctx.fillStyle = "#6e7781";
+      ctx.globalAlpha = 0.62;
+      ctx.font = "11px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+
+      for (let x = startX; x <= maxX; x += sampleStep) {
+        for (let y = startY; y <= maxY; y += sampleStep) {
+          const endX = Math.min(x + sampleStep, metadata.world_width);
+          const endY = Math.min(y + sampleStep, metadata.world_height);
+          const tileAverage = averageSurfaceCodeInTile(metadata, x, y, endX, endY);
+          if (tileAverage === null) continue;
+
+          const labelCoordinate = insetLabelPoint(
+            metadata,
+            tileAverage.centerX,
+            tileAverage.centerY,
+          );
+          const point = worldToScreen(labelCoordinate);
+          ctx.fillText(
+            formatSurfaceAverage(tileAverage.value, endX - x, endY - y),
+            point.x,
+            point.y,
+          );
+        }
+      }
+
+      ctx.restore();
     }
 
     function roundedPolygonPath(points, cornerRadius) {
@@ -1849,6 +2073,7 @@ HTML_PAGE = r"""<!doctype html>
 
     function handleWheel(event) {
       event.preventDefault();
+      stopFollowingAgent();
       const rect = canvas.getBoundingClientRect();
       const mouseX = event.clientX - rect.left;
       const mouseY = event.clientY - rect.top;
@@ -1880,6 +2105,12 @@ HTML_PAGE = r"""<!doctype html>
       const mouseY = event.clientY - rect.top;
 
       if (state.dragging) {
+        if (
+          event.clientX !== state.dragStartX
+          || event.clientY !== state.dragStartY
+        ) {
+          stopFollowingAgent();
+        }
         state.offsetX = state.dragOffsetX + event.clientX - state.dragStartX;
         state.offsetY = state.dragOffsetY + event.clientY - state.dragStartY;
         requestDraw();
@@ -1908,6 +2139,11 @@ HTML_PAGE = r"""<!doctype html>
       const rect = canvas.getBoundingClientRect();
       const node = hitTest(event.clientX - rect.left, event.clientY - rect.top);
       state.selectedNode = node;
+      if (node?.type === "agent") {
+        startFollowingAgent(node);
+      } else {
+        stopFollowingAgent();
+      }
       setDetails(node);
       requestDraw();
     }
@@ -2133,6 +2369,7 @@ HTML_PAGE = r"""<!doctype html>
 
       setBrainState(data.brain);
       refreshSelectedNodeFromWorld();
+      followSelectedAgent();
       requestDraw();
     }
 
@@ -2383,6 +2620,7 @@ HTML_PAGE = r"""<!doctype html>
       showLoading("Loading world...");
       state.hoverNode = null;
       state.selectedNode = null;
+      stopFollowingAgent();
       setDetails(null);
 
       const response = await fetch(`/api/world?id=${encodeURIComponent(worldId)}&cacheBust=${Date.now()}`);
@@ -2602,6 +2840,7 @@ HTML_PAGE = r"""<!doctype html>
 
     resetButton.addEventListener("click", () => {
       if (!state.world) return;
+      stopFollowingAgent();
       fitWorldToScreen();
       requestDraw();
     });
