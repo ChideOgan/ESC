@@ -37,7 +37,7 @@ from world_generator import (
     coordinate_key,
     empty_coordinate_entry,
     is_inside_circle,
-    surface_code,
+    rotating_surface_code,
 )
 
 
@@ -590,16 +590,11 @@ class WorldEnvironment:
         self.set_agent_coordinate(new_coordinate)
         return new_coordinate
 
-    def observe(self, last_action=None, last_prediction_error=None):
+    def observe(self, last_action=None, last_prediction_error=None, world_tick=0):
         """Return what the agent can observe at its current coordinate."""
         coordinate = self.coordinate
         x, y = coordinate
-        surface = surface_code(
-            self.metadata.get("seed", 0),
-            x,
-            y,
-            self.metadata.get("chaos_level", DEFAULT_CHAOS_LEVEL),
-        )
+        surface = rotating_surface_code(self.metadata, x, y, world_tick)
         key = coordinate_key(coordinate)
         entry = self.world["coordinates"].get(key, empty_coordinate_entry())
         deposit_id = entry["deposits"][0] if entry["deposits"] else None
@@ -626,6 +621,7 @@ class WorldEnvironment:
             "agent_id": self.agent_id,
             "coordinate": coordinate,
             "cell": cell,
+            "world_tick": world_tick,
             "last_action": last_action,
             "last_prediction_error": last_prediction_error,
         }

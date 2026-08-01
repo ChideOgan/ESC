@@ -1098,22 +1098,18 @@ HTML_PAGE = r"""<!doctype html>
           />
         </div>
         <div class="field">
-          <label for="baseWidthInput">base_world_width</label>
-          <input id="baseWidthInput" name="base_world_width" type="number" step="1" value="100000" />
-        </div>
-        <div class="field">
-          <label for="baseHeightInput">base_world_height</label>
-          <input id="baseHeightInput" name="base_world_height" type="number" step="1" value="100000" />
+          <label for="worldRadiusInput">radius</label>
+          <input id="worldRadiusInput" name="world_radius" type="number" min="1" step="1" value="56419" />
         </div>
         <div class="field">
           <label for="agentCountInput">agent_count</label>
-          <input id="agentCountInput" name="agent_count" type="number" step="1" value="8200" />
+          <input id="agentCountInput" name="agent_count" type="number" min="1" step="1" value="1" />
         </div>
         <div class="field">
           <label for="depositCountInput">deposit_count</label>
           <input id="depositCountInput" name="deposit_count" type="number" step="1" value="10000" />
         </div>
-        <div class="field full">
+        <div class="field">
           <label for="totalUnitsInput">total_resource_units</label>
           <input id="totalUnitsInput" name="total_resource_units" type="number" step="1" value="10000000" />
         </div>
@@ -1306,6 +1302,7 @@ HTML_PAGE = r"""<!doctype html>
       brainStream: null,
       brainStreamWorldId: null,
       brainIterations: 0,
+      worldTick: 0,
       trainingTimeMs: 0,
       trainingStartedAt: null,
       trainingTimer: null,
@@ -1425,8 +1422,15 @@ HTML_PAGE = r"""<!doctype html>
     function fitWorldToScreen() {
       const metadata = state.world.metadata;
       const viewport = fitViewport();
-      const scaleX = viewport.width / metadata.world_width;
-      const scaleY = viewport.height / metadata.world_height;
+      const isCircle = metadata.world_shape === "circle";
+      const worldWidth = isCircle
+        ? metadata.world_radius * 2
+        : metadata.world_width;
+      const worldHeight = isCircle
+        ? metadata.world_radius * 2
+        : metadata.world_height;
+      const scaleX = viewport.width / worldWidth;
+      const scaleY = viewport.height / worldHeight;
 
       state.scale = Math.max(0.0001, Math.min(scaleX, scaleY));
       state.minScale = state.scale * 0.4;
@@ -1434,10 +1438,16 @@ HTML_PAGE = r"""<!doctype html>
       // for a readable label. This makes the surface tile size reach 1 by 1,
       // where the displayed average is necessarily the exact integer value.
       state.maxScale = Math.max(state.scale * 800, 60);
-      state.offsetX =
-        viewport.left + (viewport.width - metadata.world_width * state.scale) / 2;
-      state.offsetY =
-        viewport.top + (viewport.height - metadata.world_height * state.scale) / 2;
+      if (isCircle) {
+        const [centerX, centerY] = metadata.world_center;
+        state.offsetX = viewport.left + (viewport.width / 2) - (centerX * state.scale);
+        state.offsetY = viewport.top + (viewport.height / 2) - (centerY * state.scale);
+      } else {
+        state.offsetX =
+          viewport.left + (viewport.width - metadata.world_width * state.scale) / 2;
+        state.offsetY =
+          viewport.top + (viewport.height - metadata.world_height * state.scale) / 2;
+      }
     }
 
     function formatChaosLevel(value) {
@@ -1638,17 +1648,48 @@ HTML_PAGE = r"""<!doctype html>
       const metadata = state.world.metadata;
 
       ctx.save();
-      ctx.strokeStyle = "#8c959f";
-      ctx.lineWidth = 1;
-      ctx.setLineDash([6, 6]);
 
       if (metadata.world_shape === "circle") {
         const center = worldToScreen(metadata.world_center);
         const radius = metadata.world_radius * state.scale;
+        const origin = rotatingSurfaceOrigin(metadata, state.worldTick);
+        const dashCount = 72;
+        const segmentAngle = (Math.PI * 2) / dashCount;
+        const dashArcAngle = segmentAngle * 0.52;
+
+        ctx.lineWidth = 2;
+        ctx.lineCap = "round";
+        for (let index = 0; index < dashCount; index += 1) {
+          // The rainbow is a fixed visual reference frame. The separate white
+          // source circle below is the part that advances with world time.
+          // Center the first visible dash on twelve o'clock instead of putting
+          // twelve o'clock at its leading edge.
+          const startAngle = (-Math.PI / 2) - (dashArcAngle / 2) + (index * segmentAngle);
+          ctx.strokeStyle = `hsl(${(index * 360) / dashCount} 86% 53%)`;
+          ctx.beginPath();
+          ctx.arc(
+            center.x,
+            center.y,
+            radius,
+            startAngle,
+            startAngle + dashArcAngle,
+          );
+          ctx.stroke();
+        }
+
+        const sourcePoint = worldToScreen(origin);
+        const markerRadius = Math.max(3, Math.min(7, radius * 0.016));
+        ctx.fillStyle = "#ffffff";
         ctx.beginPath();
-        ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
+        ctx.arc(sourcePoint.x, sourcePoint.y, markerRadius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "#1f2328";
+        ctx.lineWidth = 1.5;
         ctx.stroke();
       } else {
+        ctx.strokeStyle = "#8c959f";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([6, 6]);
         const x = state.offsetX;
         const y = state.offsetY;
         const width = metadata.world_width * state.scale;
@@ -1718,12 +1759,34 @@ HTML_PAGE = r"""<!doctype html>
       return lerp(top, bottom, ty);
     }
 
+    function surfaceRotationAngle(metadata, worldTick) {
+      const radius = Math.max(1, Number(metadata.world_radius));
+      const orbitRadius = radius;
+      const stepSize = Math.max(1, Number(metadata.surface_rotation_step_size ?? 1));
+      return (Math.PI / 2) + ((Number(worldTick) * stepSize) / orbitRadius);
+    }
+
+    function rotatingSurfaceOrigin(metadata, worldTick) {
+      const [centerX, centerY] = metadata.world_center;
+      const radius = Math.max(1, Number(metadata.world_radius));
+      const orbitRadius = radius;
+      const angle = surfaceRotationAngle(metadata, worldTick);
+
+      return [
+        Math.floor(centerX + (orbitRadius * Math.cos(angle)) + 0.5),
+        Math.floor(centerY - (orbitRadius * Math.sin(angle)) + 0.5),
+      ];
+    }
+
     function surfaceCodeAtCoordinate(metadata, x, y) {
+      const [originX, originY] = rotatingSurfaceOrigin(metadata, state.worldTick);
+      const relativeX = x - originX;
+      const relativeY = y - originY;
       const chaosLevel = Number(metadata.chaos_level ?? 0.5);
-      const broad = smoothNoise(metadata.seed, x, y, 8192, 11);
-      const medium = smoothNoise(metadata.seed, x, y, 1024, 23);
+      const broad = smoothNoise(metadata.seed, relativeX, relativeY, 8192, 11);
+      const medium = smoothNoise(metadata.seed, relativeX, relativeY, 1024, 23);
       const structuredValue = (0.65 * broad) + (0.35 * medium);
-      const chaoticValue = deterministicUnitNoise(metadata.seed, x, y, 97);
+      const chaoticValue = deterministicUnitNoise(metadata.seed, relativeX, relativeY, 97);
       const value = ((1 - chaosLevel) * structuredValue) + (chaosLevel * chaoticValue);
       return Math.min(Number(metadata.surface_code_count ?? 10) - 1, Math.floor(value * Number(metadata.surface_code_count ?? 10)));
     }
@@ -2256,6 +2319,10 @@ HTML_PAGE = r"""<!doctype html>
     function setBrainState(brain) {
       state.brainActive = Boolean(brain?.active);
       state.brainIterations = brain?.iterations || 0;
+      state.worldTick = Math.max(
+        0,
+        Math.floor(Number(brain?.world_tick ?? brain?.iterations) || 0),
+      );
       if (Number.isFinite(Number(brain?.training_time_ms))) {
         state.trainingTimeMs = Math.max(0, Math.floor(Number(brain.training_time_ms)));
         const meta = selectedWorldMeta();
@@ -2661,8 +2728,7 @@ HTML_PAGE = r"""<!doctype html>
         const payload = {
           display_name: String(formData.get("display_name") || "").trim(),
           seed: Math.trunc(numberField(formData, "seed")),
-          base_world_width: Math.trunc(numberField(formData, "base_world_width")),
-          base_world_height: Math.trunc(numberField(formData, "base_world_height")),
+          world_radius: Math.trunc(numberField(formData, "world_radius")),
           chaos_level: numberField(formData, "chaos_level"),
           agent_count: Math.trunc(numberField(formData, "agent_count")),
           deposit_count: Math.trunc(numberField(formData, "deposit_count")),
@@ -3162,7 +3228,7 @@ class BrainLabRuntime:
         self.last_prediction_error = None
         self.last_event = None
 
-        initial_observation = self.env.observe()
+        initial_observation = self.env.observe(world_tick=self.iterations)
         initial_deposit = initial_observation["cell"]["deposit_id"]
         if initial_deposit:
             self.deposit_ids_seen.add(initial_deposit)
@@ -3358,11 +3424,14 @@ class BrainLabRuntime:
         ):
             before = self.env.coordinate
             self.env.move(action, self.step_size)
-            observation = self.env.observe(last_action=action)
+            self.iterations += 1
+            observation = self.env.observe(
+                last_action=action,
+                world_tick=self.iterations,
+            )
             actual_surface = observation["cell"]["surface_code"]
             correct = prediction["predicted_surface"] == actual_surface
 
-            self.iterations += 1
             self.batch_step_total[step_number - 1] += 1
             if correct:
                 self.batch_step_correct[step_number - 1] += 1
@@ -3408,6 +3477,7 @@ class BrainLabRuntime:
             "world_id": self.world_id,
             "agent_id": self.env.agent_id,
             "iterations": self.iterations,
+            "world_tick": self.iterations,
             "training_time_ms": self.current_training_time_ms(),
             "forecast_level": self.forecast_level,
             "path_trials": self.path_trials,
@@ -3724,17 +3794,15 @@ def float_setting(payload, key):
 def generate_world_from_payload(index_path, worlds_dir, payload):
     """Generate a world, save it, and append it to the world index."""
     seed = int_setting(payload, "seed")
-    base_world_width = int_setting(payload, "base_world_width")
-    base_world_height = int_setting(payload, "base_world_height")
+    world_radius = int_setting(payload, "world_radius")
     chaos_level = float_setting(payload, "chaos_level")
-    agent_count = int_setting(payload, "agent_count")
+    agent_count = int_setting(payload, "agent_count") if "agent_count" in payload else 1
     deposit_count = int_setting(payload, "deposit_count")
     total_resource_units = int_setting(payload, "total_resource_units")
 
     world = build_world(
         seed=seed,
-        base_world_width=base_world_width,
-        base_world_height=base_world_height,
+        world_radius=world_radius,
         chaos_level=chaos_level,
         agent_count=agent_count,
         deposit_count=deposit_count,

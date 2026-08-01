@@ -71,8 +71,9 @@ Implemented so far:
 
 - bounded 2D circular coordinate world
 - reproducible world generation from random seeds
-- configurable agent and material-deposit generation from base world width and height
-- deterministic 0-9 surface-code function computed from seed, coordinate, and chaos level
+- configurable circular-world generation from a single radius
+- default dashboard world generation with one agent; the backend still supports configurable agent counts
+- deterministic 0-9 surface-code function computed from the seed and each coordinate relative to a rotating circular-boundary origin
 - map-based live-world JSON structure
 - id-keyed maps for agents, deposits, and machines
 - sparse coordinate index keyed by `"x,y"`

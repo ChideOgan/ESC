@@ -20,12 +20,11 @@ import random
 from pathlib import Path
 
 
-BASE_WORLD_WIDTH = 100_000
-BASE_WORLD_HEIGHT = 100_000
+DEFAULT_WORLD_RADIUS = 56_419
 DEFAULT_CHAOS_LEVEL = 0.5
 SURFACE_CODE_COUNT = 10
 
-AGENT_COUNT = 8_200
+AGENT_COUNT = 1
 DEPOSIT_COUNT = 10_000
 TOTAL_RESOURCE_UNITS = 10_000_000
 
@@ -52,22 +51,12 @@ def parse_args():
         description="Generate a circular 2D world with agents and material deposits."
     )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
-    parser.add_argument("--base-world-width", type=int, default=BASE_WORLD_WIDTH)
-    parser.add_argument("--base-world-height", type=int, default=BASE_WORLD_HEIGHT)
+    parser.add_argument("--radius", type=int, default=DEFAULT_WORLD_RADIUS)
     parser.add_argument(
         "--chaos-level",
         type=float,
         default=DEFAULT_CHAOS_LEVEL,
         help="0.0 gives smoother surface codes; 1.0 gives noisier surface codes.",
-    )
-    parser.add_argument(
-        "--world-radius",
-        type=int,
-        default=None,
-        help=(
-            "Override the generated circle radius. By default it is derived "
-            "from base width x height."
-        ),
     )
     parser.add_argument("--agent-count", type=int, default=AGENT_COUNT)
     parser.add_argument("--deposit-count", type=int, default=DEPOSIT_COUNT)
@@ -89,19 +78,13 @@ def validate_chaos_level(chaos_level):
     return float(chaos_level)
 
 
-def compute_world_radius(base_world_width, base_world_height):
-    """Return an integer radius based directly on base width x height.
-
-    The generated world is circular. The base width and height define the target
-    continuous area:
-
-        pi * radius^2 ~= base_width * base_height
-    """
-    if base_world_width <= 0 or base_world_height <= 0:
-        raise ValueError("Base world dimensions must be positive.")
-
-    target_area = base_world_width * base_world_height
-    return max(1, int(round(math.sqrt(target_area / math.pi))))
+def validate_world_radius(world_radius):
+    """Return a valid positive integer radius for the circular world."""
+    if isinstance(world_radius, bool) or not isinstance(world_radius, int):
+        raise ValueError("World radius must be an integer.")
+    if world_radius <= 0:
+        raise ValueError("World radius must be positive.")
+    return world_radius
 
 
 def deterministic_hash(seed, x, y, salt=0):
@@ -178,10 +161,41 @@ def surface_code(seed, x, y, chaos_level=DEFAULT_CHAOS_LEVEL):
     return min(SURFACE_CODE_COUNT - 1, int(value * SURFACE_CODE_COUNT))
 
 
+def rotating_surface_origin(metadata, world_tick):
+    """Return the integer boundary coordinate used as the surface-field origin.
+
+    The origin starts at twelve o'clock and travels one world-coordinate of arc
+    length per tick, completing one circuit in roughly ``2 * pi * radius``
+    ticks. Keeping the returned coordinate integral lets the terrain function
+    continue to use integer x/y inputs.
+    """
+    radius = validate_world_radius(int(metadata["world_radius"]))
+    center_x, center_y = metadata["world_center"]
+    orbit_radius = radius
+    step_size = int(metadata.get("surface_rotation_step_size", 1))
+    # Start at twelve o'clock, then move counterclockwise by one arc-length
+    # coordinate per world tick.
+    angle = (math.pi / 2) + ((int(world_tick) * step_size) / orbit_radius)
+
+    return [
+        int(math.floor(center_x + (orbit_radius * math.cos(angle)) + 0.5)),
+        int(math.floor(center_y - (orbit_radius * math.sin(angle)) + 0.5)),
+    ]
+
+
+def rotating_surface_code(metadata, x, y, world_tick):
+    """Return a surface code from x/y coordinates relative to the moving origin."""
+    origin_x, origin_y = rotating_surface_origin(metadata, world_tick)
+    return surface_code(
+        metadata.get("seed", 0),
+        x - origin_x,
+        y - origin_y,
+        metadata.get("chaos_level", DEFAULT_CHAOS_LEVEL),
+    )
+
+
 def build_metadata(
     seed,
-    base_world_width,
-    base_world_height,
     chaos_level,
     world_radius,
     agent_count,
@@ -190,18 +204,17 @@ def build_metadata(
 ):
     """Build the world metadata block used by generation and visualization."""
     chaos_level = validate_chaos_level(chaos_level)
+    world_radius = validate_world_radius(world_radius)
     world_width = (world_radius * 2) + 1
     world_height = (world_radius * 2) + 1
-    target_world_area = base_world_width * base_world_height
 
     return {
         "seed": seed,
         "world_shape": "circle",
-        "base_world_width": base_world_width,
-        "base_world_height": base_world_height,
         "chaos_level": chaos_level,
         "surface_code_count": SURFACE_CODE_COUNT,
-        "target_world_area": target_world_area,
+        "surface_coordinate_mode": "rotating_relative",
+        "surface_rotation_step_size": 1,
         "actual_continuous_area": math.pi * (world_radius**2),
         "world_radius": world_radius,
         "world_center": [world_radius, world_radius],
@@ -362,10 +375,8 @@ def build_coordinate_index(agents, deposits, machines):
 
 def build_world(
     seed=DEFAULT_SEED,
-    base_world_width=BASE_WORLD_WIDTH,
-    base_world_height=BASE_WORLD_HEIGHT,
+    world_radius=DEFAULT_WORLD_RADIUS,
     chaos_level=DEFAULT_CHAOS_LEVEL,
-    world_radius=None,
     agent_count=AGENT_COUNT,
     deposit_count=DEPOSIT_COUNT,
     total_resource_units=TOTAL_RESOURCE_UNITS,
@@ -373,18 +384,10 @@ def build_world(
     """Create the full JSON-serializable world dictionary."""
     rng = random.Random(seed)
     chaos_level = validate_chaos_level(chaos_level)
-    if world_radius is None:
-        world_radius = compute_world_radius(
-            base_world_width,
-            base_world_height,
-        )
-    if world_radius <= 0:
-        raise ValueError("World radius must be positive.")
+    world_radius = validate_world_radius(world_radius)
 
     metadata = build_metadata(
         seed,
-        base_world_width,
-        base_world_height,
         chaos_level,
         world_radius,
         agent_count,
@@ -563,10 +566,8 @@ def main():
     args = parse_args()
     world = build_world(
         seed=args.seed,
-        base_world_width=args.base_world_width,
-        base_world_height=args.base_world_height,
+        world_radius=args.radius,
         chaos_level=args.chaos_level,
-        world_radius=args.world_radius,
         agent_count=args.agent_count,
         deposit_count=args.deposit_count,
         total_resource_units=args.total_resource_units,
